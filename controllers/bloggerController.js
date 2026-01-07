@@ -1502,10 +1502,79 @@ const getBulkUploadHistory = async (req, res, next) => {
     }
 };
 
+/**
+ * @route   POST /api/blogger/tasks/:id/reject
+ * @desc    Reject a task assigned by manager - sends back with rejection reason
+ * @access  Blogger only
+ * 
+ * id = new_order_process_details.id (detail_id)
+ * Updates status to 11 (rejected) and stores rejection reason
+ */
+const rejectTask = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { rejection_reason } = req.body;
+        const bloggerId = req.user.id;
+
+        // Validation
+        if (!rejection_reason || rejection_reason.trim().length === 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Rejection reason is required'
+            });
+        }
+
+        // Verify the detail belongs to this blogger
+        const detailCheck = await query(
+            `SELECT nopd.id, nopd.vendor_id, nopd.status,
+                    ns.root_domain
+             FROM new_order_process_details nopd
+             JOIN new_sites ns ON nopd.new_site_id = ns.id
+             WHERE nopd.id = $1`,
+            [id]
+        );
+
+        if (detailCheck.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'Task not found'
+            });
+        }
+
+        const detail = detailCheck.rows[0];
+
+        // Verify task is assigned to this blogger
+        if (String(detail.vendor_id) !== String(bloggerId)) {
+            return res.status(403).json({
+                error: 'Forbidden',
+                message: 'This task is not assigned to you'
+            });
+        }
+
+        // Update the detail with rejection status (11) and reason
+        await query(
+            `UPDATE new_order_process_details 
+             SET status = 11, reject_reason = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2`,
+            [rejection_reason, id]
+        );
+
+        res.json({
+            message: 'Task rejected successfully. Manager will be notified.',
+            detail_id: id,
+            root_domain: detail.root_domain,
+            rejection_reason
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 module.exports = {
     getMyTasks,
     getTaskById,
     submitLiveLink,
+    rejectTask,
     getWallet,
     requestWithdrawal,
     getWithdrawals,
@@ -1531,4 +1600,3 @@ module.exports = {
     uploadBulkSitesFile,
     getBulkUploadHistory
 };
-

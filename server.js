@@ -30,7 +30,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:3000',
-  'https://tanks-reservation-button-bullet.trycloudflare.com'
+  'https://installation-policies-nose-julian.trycloudflare.com'
 ];
 console.log(`🔒 CORS configured for origins: ${allowedOrigins.join(', ')}`);
 

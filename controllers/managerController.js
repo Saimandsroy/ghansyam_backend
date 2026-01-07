@@ -1735,6 +1735,62 @@ const finalizeFromBlogger = async (req, res, next) => {
     }
 };
 
+/**
+ * @route   POST /api/manager/blogger-submissions/:id/reject
+ * @desc    Reject blogger submission - sends back to blogger with reason
+ * @access  Manager only
+ */
+const rejectBloggerSubmission = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { rejection_reason } = req.body;
+
+        if (!rejection_reason) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Rejection reason is required'
+            });
+        }
+
+        // Check if detail exists
+        const detailResult = await query(
+            `SELECT nopd.*, ns.root_domain, u.name as vendor_name
+             FROM new_order_process_details nopd
+             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+             LEFT JOIN users u ON nopd.vendor_id = u.id
+             WHERE nopd.id = $1`,
+            [id]
+        );
+
+        if (detailResult.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'Blogger submission not found'
+            });
+        }
+
+        const detail = detailResult.rows[0];
+
+        // Update status to 11 (Rejected) and store rejection reason
+        await query(
+            `UPDATE new_order_process_details 
+             SET status = 11, reject_reason = $1, updated_at = CURRENT_TIMESTAMP 
+             WHERE id = $2`,
+            [rejection_reason, id]
+        );
+
+        res.json({
+            message: 'Blogger submission rejected successfully',
+            detail_id: id,
+            root_domain: detail.root_domain,
+            vendor_name: detail.vendor_name,
+            rejection_reason
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 module.exports = {
     getDashboardStats,
     getTasks,
@@ -1764,5 +1820,6 @@ module.exports = {
     getWebsites,
     pushToBloggers,
     getBloggerSubmissionDetail,
-    finalizeFromBlogger
+    finalizeFromBlogger,
+    rejectBloggerSubmission
 };

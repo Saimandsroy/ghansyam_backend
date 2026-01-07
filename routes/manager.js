@@ -71,5 +71,7 @@ router.get('/websites', managerController.getWebsites);
 router.get('/blogger-submissions/:id', managerController.getBloggerSubmissionDetail);
 // Finalize blogger submission - mark complete and credit blogger
 router.post('/blogger-submissions/:id/finalize', managerController.finalizeFromBlogger);
+// Reject blogger submission - send back to blogger with reason
+router.post('/blogger-submissions/:id/reject', managerController.rejectBloggerSubmission);
 
 module.exports = router;
