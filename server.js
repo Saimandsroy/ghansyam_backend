@@ -30,19 +30,27 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:3000',
-  'https://installation-policies-nose-julian.trycloudflare.com'
+  'https://linkmanagement.femur.studio',
+  'https://api-linkmanagement.femur.studio',
+  'https://kuberfashion.femur.studio',
+  'https://api-kuberfashion.femur.studio'
 ];
+
+// Helper function to check if origin is allowed
+const isOriginAllowed = (origin) => {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  if (origin.endsWith('.trycloudflare.com')) return true;
+  if (origin.endsWith('.femur.studio')) return true;
+  return false;
+};
 console.log(`🔒 CORS configured for origins: ${allowedOrigins.join(', ')}`);
 
 // Initialize Socket.io with CORS
 const io = new Server(server, {
   cors: {
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        return callback(null, true);
-      }
-      if (origin && origin.endsWith('.trycloudflare.com')) {
+      if (isOriginAllowed(origin)) {
         return callback(null, true);
       }
       return callback(new Error('Not allowed by CORS'));
@@ -87,13 +95,7 @@ module.exports.io = io;
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      return callback(null, true);
-    }
-    // Allow any trycloudflare.com subdomain for tunnel testing
-    if (origin && origin.endsWith('.trycloudflare.com')) {
+    if (isOriginAllowed(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));

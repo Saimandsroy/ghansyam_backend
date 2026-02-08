@@ -52,6 +52,8 @@ router.get('/wallet', bloggerController.getWallet);
 router.post('/withdrawals/request', bloggerController.requestWithdrawal);
 router.get('/withdrawals', bloggerController.getWithdrawals);
 router.get('/invoices', bloggerController.getInvoices);
+router.get('/invoices/:id', bloggerController.getInvoiceDetail);
+router.get('/invoices/:id/pdf', bloggerController.downloadInvoicePdf);
 
 // ==================== SITES MANAGEMENT ====================
 router.get('/sites', bloggerController.getMySites);

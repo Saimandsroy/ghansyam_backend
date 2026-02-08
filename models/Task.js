@@ -87,24 +87,29 @@ class Task {
                 o.updated_at,
                 m.name as manager_name,
                 t.name as team_name,
-                (SELECT MAX(nop.status) FROM new_order_processes nop WHERE nop.new_order_id = o.id) as process_status,
-                (SELECT nop.writer_id FROM new_order_processes nop WHERE nop.new_order_id = o.id ORDER BY nop.id DESC LIMIT 1) as assigned_writer_id,
-                (SELECT w.name FROM new_order_processes nop 
-                 JOIN users w ON nop.writer_id = w.id 
-                 WHERE nop.new_order_id = o.id ORDER BY nop.id DESC LIMIT 1) as writer_name,
-                (SELECT w.email FROM new_order_processes nop 
-                 JOIN users w ON nop.writer_id = w.id 
-                 WHERE nop.new_order_id = o.id ORDER BY nop.id DESC LIMIT 1) as writer_email,
-                (SELECT nopd.vendor_id FROM new_order_process_details nopd 
-                 JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id 
-                 WHERE nop.new_order_id = o.id ORDER BY nopd.id DESC LIMIT 1) as assigned_blogger_id,
-                (SELECT v.name FROM new_order_process_details nopd 
-                 JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id 
-                 JOIN users v ON nopd.vendor_id = v.id
-                 WHERE nop.new_order_id = o.id ORDER BY nopd.id DESC LIMIT 1) as blogger_name
+                nop.status as process_status,
+                nop.writer_id as assigned_writer_id,
+                w.name as writer_name,
+                w.email as writer_email,
+                nopd.vendor_id as assigned_blogger_id,
+                v.name as blogger_name
             FROM new_orders o
             LEFT JOIN users m ON o.manager_id = m.id
             LEFT JOIN users t ON o.team_id = t.id
+            LEFT JOIN LATERAL (
+                SELECT status, writer_id, id 
+                FROM new_order_processes 
+                WHERE new_order_id = o.id 
+                ORDER BY id DESC LIMIT 1
+            ) nop ON true
+            LEFT JOIN users w ON nop.writer_id = w.id
+            LEFT JOIN LATERAL (
+                SELECT vendor_id 
+                FROM new_order_process_details 
+                WHERE new_order_process_id = nop.id 
+                ORDER BY id DESC LIMIT 1
+            ) nopd ON true
+            LEFT JOIN users v ON nopd.vendor_id = v.id
             WHERE 1=1
         `;
 
@@ -146,7 +151,7 @@ class Task {
             paramIndex++;
         }
 
-        sql += ' ORDER BY o.created_at DESC LIMIT 100';
+        sql += ' ORDER BY COALESCE(o.updated_at, o.created_at) DESC NULLS LAST';
 
         const result = await query(sql, params);
 
@@ -254,7 +259,10 @@ class Task {
             // Niche Edit writer submission fields
             insert_after: row.insert_after,
             statement: row.statement,
-            writer_note: row.note
+            writer_note: row.note,
+            option_type: row.type || 'insert', // Map DB 'type' to 'option_type'
+            replace_with: row.insert_after,    // Reuse column for replace_with
+            replace_statement: row.statement   // Reuse column for replace_statement
         }));
 
         return {
@@ -311,12 +319,23 @@ class Task {
         // Generate order ID if not provided
         const orderId = manual_order_id || `ORD-${Date.now()}`;
 
+        // Check if order_id already exists (uniqueness validation)
+        const existingOrder = await query(
+            'SELECT id FROM new_orders WHERE order_id = $1',
+            [orderId]
+        );
+        if (existingOrder.rows.length > 0) {
+            const error = new Error(`Order ID "${orderId}" already exists. Please use a unique ID.`);
+            error.statusCode = 400;
+            throw error;
+        }
+
         const result = await query(
             `INSERT INTO new_orders (
                 manager_id, team_id, order_id, client_name, client_website,
                 no_of_links, order_type, order_package, message, category,
-                new_order_status, fc, type
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+                new_order_status, fc, type, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) 
             RETURNING *`,
             [
                 manager_id || created_by,
@@ -340,8 +359,8 @@ class Task {
         // Create initial process record
         await query(
             `INSERT INTO new_order_processes (
-                new_order_id, team_id, manager_id, status, note
-            ) VALUES ($1, $2, $3, $4, $5)`,
+                new_order_id, team_id, manager_id, status, note, created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
             [order.id, assigned_team_id || 0, manager_id || created_by, 1, notes || '']
         );
 

@@ -45,12 +45,17 @@ router.put('/price-charts/:id', adminController.updatePriceChart);
 router.delete('/price-charts/:id', adminController.deletePriceChart);
 
 // ==================== WALLET MANAGEMENT ====================
+router.get('/bloggers-stats', adminController.getBloggerStats);
 router.get('/wallet/bloggers', adminController.getBloggersWallets);
 router.get('/wallet/payment-history', adminController.getPaymentHistory);
 router.get('/wallet/withdrawal-requests', adminController.getWithdrawalRequests);
 router.get('/wallet/withdrawal-requests/:id', adminController.getWithdrawalRequestDetail);
 router.put('/wallet/withdrawal-requests/:id/approve', adminController.approveWithdrawal);
 router.put('/wallet/withdrawal-requests/:id/reject', adminController.rejectWithdrawal);
+
+// ==================== INVOICE MANAGEMENT ====================
+router.get('/wallet/invoices/:id', adminController.getInvoiceDetail);
+router.get('/wallet/invoices/:id/pdf', adminController.downloadInvoicePdf);
 
 // ==================== CREATE ACCOUNT FROM SITES ====================
 router.get('/sites/pending-accounts', adminController.getSitesForAccountCreation);

@@ -150,7 +150,13 @@ const getOrders = async (req, res, next) => {
                 o.id,
                 o.order_id,
                 o.client_name,
-                o.client_website,
+                COALESCE(
+                    NULLIF(o.client_website, ''),
+                    (SELECT ns.root_domain FROM new_order_process_details nopd 
+                     JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id 
+                     JOIN new_sites ns ON nopd.new_site_id = ns.id 
+                     WHERE nop.new_order_id = o.id LIMIT 1)
+                ) as client_website,
                 o.no_of_links,
                 o.order_type,
                 o.order_package,
@@ -174,7 +180,7 @@ const getOrders = async (req, res, next) => {
                 o.updated_at
             FROM new_orders o
             LEFT JOIN users m ON o.manager_id = m.id
-            ORDER BY o.created_at DESC
+            ORDER BY o.id DESC
             LIMIT $1 OFFSET $2
         `;
 
@@ -323,7 +329,8 @@ const getPendingFromBloggers = async (req, res, next) => {
                 ns.niche_edit_price as niche_price,
                 v.name as vendor_name,
                 v.email as vendor_email,
-                nop.new_order_id as order_id,
+                nop.new_order_id as db_order_id,
+                no.order_id as manual_order_id,
                 no.client_name,
                 no.order_type,
                 no.category
@@ -339,7 +346,7 @@ const getPendingFromBloggers = async (req, res, next) => {
         // Map to frontend format matching the screenshot
         const orders = result.rows.map(row => ({
             id: row.detail_id,
-            order_id: row.order_id,
+            order_id: row.manual_order_id || `#${row.db_order_id}`,
             order_type: row.order_type,
 
             // Vendor/Blogger info
@@ -393,9 +400,13 @@ const getRejectedOrders = async (req, res, next) => {
         const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
 
-        // Get total count (status 7 = submitted/pending rejection, status 11 = rejected)
+        // Get total count
+        // Status 11 = old blogger rejections (before today only - today's are manager rejections)
+        // Status 12 = new blogger rejections (all time)
         const countResult = await query(
-            `SELECT COUNT(*) as total FROM new_order_process_details WHERE status IN (7, 11)`
+            `SELECT COUNT(*) as total FROM new_order_process_details 
+             WHERE status = 12 
+             OR (status = 11 AND DATE(updated_at) < CURRENT_DATE)`
         );
         const total = parseInt(countResult.rows[0]?.total || 0);
 
@@ -410,7 +421,7 @@ const getRejectedOrders = async (req, res, next) => {
                 u.email as blogger_email,
                 ns.root_domain as website_url,
                 nopd.reject_reason as rejection_reason,
-                CASE WHEN nopd.status = 7 THEN 'Pending Review' ELSE 'Rejected' END as status_label,
+                'Rejected' as status_label,
                 nopd.status,
                 nopd.created_at,
                 nopd.updated_at
@@ -419,7 +430,8 @@ const getRejectedOrders = async (req, res, next) => {
              JOIN new_orders o ON nop.new_order_id = o.id
              LEFT JOIN users u ON nopd.vendor_id = u.id
              LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
-             WHERE nopd.status IN (7, 11)
+             WHERE nopd.status = 12 
+             OR (nopd.status = 11 AND DATE(nopd.updated_at) < CURRENT_DATE)
              ORDER BY nopd.updated_at DESC
              LIMIT $1 OFFSET $2`,
             [limit, offset]
@@ -1092,13 +1104,47 @@ const finalizeTask = async (req, res, next) => {
             );
         }
 
-        // Mark task as completed and credited
-        const updatedTask = await Task.markAsCompleted(id, paymentAmount);
+        // Get the process ID of this detail
+        const processIdResult = await query(
+            `SELECT nop.id as process_id FROM new_order_processes nop
+             WHERE nop.new_order_id = $1
+             ORDER BY nop.id DESC LIMIT 1`,
+            [id]
+        );
+
+        let allLinksComplete = false;
+
+        if (processIdResult.rows.length > 0) {
+            const processId = processIdResult.rows[0].process_id;
+
+            // Check if ALL sibling details are complete (status = 8)
+            // Order should only be marked complete when ALL links are approved
+            const pendingCheck = await query(
+                `SELECT COUNT(*) as pending FROM new_order_process_details 
+                 WHERE new_order_process_id = $1 AND status != 8`,
+                [processId]
+            );
+
+            allLinksComplete = parseInt(pendingCheck.rows[0].pending) === 0;
+
+            // Only update process and order status if ALL details are complete
+            if (allLinksComplete) {
+                await query(
+                    `UPDATE new_order_processes SET status = 8, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+                    [processId]
+                );
+                // Now update the order status to complete
+                await Task.markAsCompleted(id, paymentAmount);
+            }
+        }
 
         res.json({
-            message: 'Task finalized and blogger credited successfully',
-            task: updatedTask,
-            payment_credited: paymentAmount
+            message: allLinksComplete
+                ? 'Order finalized! All links are complete.'
+                : 'Link credited successfully. Order still has pending links.',
+            task: await Task.findById(id),
+            payment_credited: paymentAmount,
+            all_links_complete: allLinksComplete
         });
     } catch (error) {
         next(error);
@@ -1510,9 +1556,9 @@ VALUES(gen_random_uuid(), 'order_assigned', 'App\\Models\\User', $1, $2, CURRENT
             [processId]
         );
 
-        // Update order status
+        // Update order status to 4 (With Blogger) - NOT 5 (Completed)
         await query(
-            `UPDATE new_orders SET new_order_status = 5, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+            `UPDATE new_orders SET new_order_status = 4, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
             [id]
         );
 
@@ -1714,21 +1760,33 @@ const finalizeFromBlogger = async (req, res, next) => {
             [detail.new_order_process_id]
         );
 
-        // If all details are complete, update process status
-        if (parseInt(processCheck.rows[0].pending) === 0) {
+        const allLinksComplete = parseInt(processCheck.rows[0].pending) === 0;
+
+        // If all details are complete, update process AND order status
+        if (allLinksComplete) {
             await query(
                 `UPDATE new_order_processes SET status = 8, updated_at = CURRENT_TIMESTAMP 
                  WHERE id = $1`,
                 [detail.new_order_process_id]
             );
+
+            // Also update the parent order status to complete
+            await query(
+                `UPDATE new_orders SET new_order_status = 5, completed_tasks = completed_tasks + 1, updated_at = CURRENT_TIMESTAMP 
+                 WHERE id = (SELECT new_order_id FROM new_order_processes WHERE id = $1)`,
+                [detail.new_order_process_id]
+            );
         }
 
         res.json({
-            message: 'Order finalized and blogger credited!',
+            message: allLinksComplete
+                ? 'Order finalized! All links are complete.'
+                : 'Link credited successfully. Order still has pending links.',
             detail_id: id,
             root_domain: detail.root_domain,
             vendor_name: detail.vendor_name,
-            credited_amount: amount
+            credited_amount: amount,
+            all_links_complete: allLinksComplete
         });
     } catch (error) {
         next(error);
@@ -1791,6 +1849,78 @@ const rejectBloggerSubmission = async (req, res, next) => {
     }
 };
 
+/**
+ * @route   POST /api/manager/orders/create/chain
+ * @desc    Create order and directly push to Writer or Blogger (bypassing steps)
+ * @access  Manager only
+ */
+const createOrderChain = async (req, res, next) => {
+    try {
+        const {
+            client_name, order_type, no_of_links, notes,
+            manual_order_id, client_website, fc, order_package, category,
+            target_stage, websites, content_data, assigned_writer_id
+        } = req.body;
+
+        if (!client_name) {
+            return res.status(400).json({ error: 'Validation Error', message: 'Client name is required' });
+        }
+        if (!websites || !Array.isArray(websites) || websites.length === 0) {
+            return res.status(400).json({ error: 'Validation Error', message: 'At least one website must be selected' });
+        }
+        if (target_stage === 'writer' && !assigned_writer_id) {
+            return res.status(400).json({ error: 'Validation Error', message: 'Writer ID is required' });
+        }
+
+        const orderId = manual_order_id || `ORD-${Date.now()}`;
+
+        // Check duplicate
+        const existing = await query('SELECT id FROM new_orders WHERE order_id = $1', [orderId]);
+        if (existing.rows.length > 0) {
+            return res.status(400).json({ error: 'Validation Error', message: `Order ID "${orderId}" already exists` });
+        }
+
+        // Create order
+        const orderResult = await query(
+            `INSERT INTO new_orders (manager_id, team_id, order_id, client_name, client_website, no_of_links, order_type, order_package, message, category, new_order_status, fc, type, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING *`,
+            [req.user.id, 0, orderId, client_name, client_website || '', no_of_links || websites.length, order_type || 'Guest Post', order_package || '', notes || '', category || '', target_stage === 'writer' ? 3 : 5, fc ? 1 : 0, order_type || 'Guest Post']
+        );
+        const order = orderResult.rows[0];
+
+        // Create process
+        const processResult = await query(
+            `INSERT INTO new_order_processes (new_order_id, team_id, manager_id, writer_id, status, note, statement, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) RETURNING id`,
+            [order.id, 0, req.user.id, target_stage === 'writer' ? assigned_writer_id : null, target_stage === 'writer' ? 3 : 5, notes || '', content_data?.instructions || '']
+        );
+        const processId = processResult.rows[0].id;
+
+        // Create details
+        for (const w of websites) {
+            // For blogger stage, try to get vendor_id from the site
+            let vendorId = null;
+            if (target_stage === 'blogger') {
+                const siteResult = await query('SELECT uploaded_user_id FROM new_sites WHERE id = $1', [w.id]);
+                vendorId = siteResult.rows[0]?.uploaded_user_id || null;
+            }
+
+            await query(
+                `INSERT INTO new_order_process_details (new_order_process_id, new_site_id, url, anchor, title, note, doc_urls, ourl, insert_after, statement, upfront_payment, paypal_email, price, vendor_id, status, type, created_at, updated_at) 
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+                [processId, w.id, w.target_url || '', w.anchor_text || '', w.article_title || '', w.note || '',
+                    w.doc_url || w.copyUrl || '', w.post_url || '', w.option_type === 'replace' ? w.replace_with : w.insert_after || '',
+                    w.option_type === 'replace' ? w.replace_statement : w.insert_statement || '',
+                    w.upfront_payment ? 1 : 0, w.paypal_id || '', 0, vendorId,
+                    target_stage === 'writer' ? 3 : 5, w.option_type || 'insert']
+            );
+        }
+
+        res.status(201).json({ message: `Order created and pushed to ${target_stage}`, order: { id: order.id, order_id: orderId } });
+    } catch (error) {
+        next(error);
+    }
+};
+
 module.exports = {
     getDashboardStats,
     getTasks,
@@ -1821,5 +1951,6 @@ module.exports = {
     pushToBloggers,
     getBloggerSubmissionDetail,
     finalizeFromBlogger,
-    rejectBloggerSubmission
+    rejectBloggerSubmission,
+    createOrderChain
 };

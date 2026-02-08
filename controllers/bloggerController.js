@@ -32,7 +32,7 @@ const getMyTasks = async (req, res, next) => {
 
         // Direct query to fetch tasks assigned to this vendor/blogger
         const result = await query(
-            `SELECT 
+            `SELECT DISTINCT ON (nopd.new_site_id, nop.new_order_id)
                 nopd.id as detail_id,
                 nopd.new_order_process_id as process_id,
                 nopd.new_site_id as site_id,
@@ -49,6 +49,7 @@ const getMyTasks = async (req, res, next) => {
                 nopd.doc_urls,
                 nopd.title,
                 nopd.upload_doc_file,
+                nopd.reject_reason,
                 nopd.created_at as assigned_at,
                 ns.root_domain,
                 ns.da,
@@ -72,9 +73,12 @@ const getMyTasks = async (req, res, next) => {
              JOIN new_orders no ON nop.new_order_id = no.id
              LEFT JOIN users m ON no.manager_id = m.id
              WHERE nopd.vendor_id = $1
-             ORDER BY COALESCE(nopd.created_at, no.created_at) DESC NULLS LAST`,
+             ORDER BY nopd.new_site_id, nop.new_order_id, COALESCE(nopd.created_at, no.created_at) DESC NULLS LAST`,
             [bloggerId]
         );
+
+        // Sort by date manually since DISTINCT ON requires specific sorting
+        result.rows.sort((a, b) => new Date(b.order_created_at) - new Date(a.order_created_at));
 
         // Map to frontend-friendly format
         const tasks = result.rows.map(row => ({
@@ -113,16 +117,18 @@ const getMyTasks = async (req, res, next) => {
             // 5 = assigned to blogger (pending)
             // 7 = blogger submitted URL (waiting for manager approval)
             // 8 = manager approved/credited (completed)
-            // 11 = rejected by manager (rejected)
+            // 11 = rejected by manager (for revision)
+            // 12 = rejected by blogger (refused to do)
             current_status: (() => {
                 const status = row.detail_status;
                 if (status === 8) return 'completed';
-                if (status === 11) return 'rejected';
+                if (status === 11 || status === 12) return 'rejected';
                 if (status === 7 || row.submit_url) return 'waiting';
                 return 'pending'; // status 5 or assigned but not submitted
             })(),
             submitted_url: row.submit_url,
             detail_status: row.detail_status,
+            rejection_reason: row.reject_reason,
 
             // Dates
             created_at: row.order_created_at,
@@ -725,7 +731,7 @@ const getNotifications = async (req, res, next) => {
     try {
         const result = await query(
             `SELECT * FROM notifications 
-             WHERE user_id = $1 
+             WHERE notifiable_id = $1 AND notifiable_type = 'App\\Models\\User'
              ORDER BY created_at DESC 
              LIMIT 50`,
             [req.user.id]
@@ -734,7 +740,7 @@ const getNotifications = async (req, res, next) => {
         // Count unread notifications
         const unreadCount = await query(
             `SELECT COUNT(*) as count FROM notifications 
-             WHERE user_id = $1 AND is_read = false`,
+             WHERE notifiable_id = $1 AND notifiable_type = 'App\\Models\\User' AND read_at IS NULL`,
             [req.user.id]
         );
 
@@ -759,8 +765,8 @@ const markNotificationRead = async (req, res, next) => {
 
         const result = await query(
             `UPDATE notifications 
-             SET is_read = true 
-             WHERE id = $1 AND user_id = $2 
+             SET read_at = CURRENT_TIMESTAMP 
+             WHERE id = $1 AND notifiable_id = $2 
              RETURNING *`,
             [id, req.user.id]
         );
@@ -790,8 +796,8 @@ const markAllNotificationsRead = async (req, res, next) => {
     try {
         await query(
             `UPDATE notifications 
-             SET is_read = true 
-             WHERE user_id = $1 AND is_read = false`,
+             SET read_at = CURRENT_TIMESTAMP 
+             WHERE notifiable_id = $1 AND read_at IS NULL`,
             [req.user.id]
         );
 
@@ -986,11 +992,11 @@ const getWithdrawableOrders = async (req, res, next) => {
              WHERE nopd.vendor_id = $1 
                AND nopd.status = 8
                AND nopd.id NOT IN (
-                   -- Exclude orders that are in an APPROVED withdrawal request
+                   -- Exclude orders that are in any NON-REJECTED withdrawal request (Pending, Approved, Processing)
                    SELECT wh.order_detail_id 
                    FROM wallet_histories wh
                    JOIN withdraw_requests wr ON wh.withdraw_request_id = wr.id
-                   WHERE wr.status = 1
+                   WHERE wr.status IN (0, 1, 2) -- 0=Pending, 1=Approved, 2=Processing
                      AND wh.order_detail_id IS NOT NULL
                )
                AND nopd.id NOT IN (
@@ -1551,10 +1557,12 @@ const rejectTask = async (req, res, next) => {
             });
         }
 
-        // Update the detail with rejection status (11) and reason
+        // Update the detail with rejection status (12 = blogger rejected) and reason
+        // Note: Status 11 = Manager rejected blogger's submission (for revision)
+        //       Status 12 = Blogger rejected the assignment (refused to do it)
         await query(
             `UPDATE new_order_process_details 
-             SET status = 11, reject_reason = $1, updated_at = CURRENT_TIMESTAMP
+             SET status = 12, reject_reason = $1, updated_at = CURRENT_TIMESTAMP
              WHERE id = $2`,
             [rejection_reason, id]
         );
@@ -1570,6 +1578,236 @@ const rejectTask = async (req, res, next) => {
     }
 };
 
+// ==================== INVOICE DETAIL ====================
+
+/**
+ * @route   GET /api/blogger/invoices/:id
+ * @desc    Get invoice detail for a specific withdrawal request
+ * @access  Blogger only
+ */
+const getInvoiceDetail = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const bloggerId = req.user.id;
+
+        // Get withdrawal request and user info - ensure it belongs to this blogger
+        const wrResult = await query(
+            `SELECT 
+                wr.id,
+                wr.user_id,
+                wr.status,
+                wr.invoice_number,
+                wr.invoice_pre,
+                wr.created_at,
+                wr.updated_at,
+                u.name as user_name,
+                u.email as user_email,
+                u.whatsapp as phone,
+                cl.name as country_name
+             FROM withdraw_requests wr
+             JOIN users u ON wr.user_id = u.id
+             LEFT JOIN countries_list cl ON u.country_id = cl.id
+             WHERE wr.id = $1 AND wr.user_id = $2`,
+            [id, bloggerId]
+        );
+
+        if (wrResult.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'Invoice not found'
+            });
+        }
+
+        const wr = wrResult.rows[0];
+
+        // Get all orders/items linked to this withdrawal
+        const itemsResult = await query(
+            `SELECT 
+                wh.id,
+                wh.order_detail_id,
+                CASE 
+                    WHEN wh.price > 0 THEN wh.price
+                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
+                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
+                    ELSE 0
+                END as price,
+                nopd.submit_url,
+                ns.root_domain,
+                no.order_id as manual_order_id
+             FROM wallet_histories wh
+             LEFT JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
+             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+             LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+             LEFT JOIN new_orders no ON nop.new_order_id = no.id
+             WHERE wh.withdraw_request_id = $1
+             ORDER BY wh.created_at DESC`,
+            [id]
+        );
+
+        // Calculate total
+        const totalAmount = itemsResult.rows.reduce((sum, row) => sum + parseFloat(row.price || 0), 0);
+
+        // Format date
+        const formatDate = (dateStr) => {
+            if (!dateStr) return '';
+            const d = new Date(dateStr);
+            return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        };
+
+        res.json({
+            invoice: {
+                number: wr.invoice_pre ? `${wr.invoice_pre}${wr.invoice_number}` : (wr.invoice_number || wr.id),
+                date: formatDate(wr.created_at),
+                paidDate: wr.status === 1 ? formatDate(wr.updated_at) : null,
+                status: wr.status,
+                statusText: wr.status === 1 ? 'PAID' : wr.status === 2 ? 'REJECTED' : 'PENDING'
+            },
+            blogger: {
+                name: wr.user_name || 'N/A',
+                email: wr.user_email || 'N/A',
+                phone: wr.phone || 'N/A',
+                country: wr.country_name || 'N/A'
+            },
+            company: {
+                name: 'Link Management',
+                address: 'Digital Services HQ',
+                email: 'support@linkmanagement.com'
+            },
+            items: itemsResult.rows.map((row) => ({
+                id: row.id,
+                link: row.submit_url || '',
+                orderId: row.manual_order_id || `#${row.order_detail_id}`,
+                amount: `$${parseFloat(row.price || 0).toFixed(2)}`
+            })),
+            total: `$${totalAmount.toFixed(2)}`,
+            note: 'Thank you for your business!'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   GET /api/blogger/invoices/:id/pdf
+ * @desc    Download invoice as PDF
+ * @access  Blogger only
+ */
+const PDFDocument = require('pdfkit');
+const downloadInvoicePdf = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const bloggerId = req.user.id;
+
+        // Fetch invoice data - ensure it belongs to this blogger
+        const wrResult = await query(
+            `SELECT wr.id, wr.status, wr.invoice_number, wr.invoice_pre, wr.created_at, wr.updated_at,
+                    u.name, u.email, u.whatsapp as phone, cl.name as country_name
+             FROM withdraw_requests wr
+             JOIN users u ON wr.user_id = u.id
+             LEFT JOIN countries_list cl ON u.country_id = cl.id
+             WHERE wr.id = $1 AND wr.user_id = $2`,
+            [id, bloggerId]
+        );
+
+        if (wrResult.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
+        const wr = wrResult.rows[0];
+
+        const itemsResult = await query(
+            `SELECT 
+                CASE 
+                    WHEN wh.price > 0 THEN wh.price
+                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
+                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
+                    ELSE 0
+                END as price,
+                nopd.submit_url, 
+                ns.root_domain, 
+                no.order_id as manual_order_id
+             FROM wallet_histories wh
+             LEFT JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
+             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+             LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+             LEFT JOIN new_orders no ON nop.new_order_id = no.id
+             WHERE wh.withdraw_request_id = $1`,
+            [id]
+        );
+
+        const totalAmount = itemsResult.rows.reduce((sum, row) => sum + parseFloat(row.price || 0), 0);
+        const invNum = wr.invoice_pre ? `${wr.invoice_pre}${wr.invoice_number}` : (wr.invoice_number || id);
+
+        // Create PDF
+        const doc = new PDFDocument({ margin: 50 });
+        const filename = `invoice-LM${invNum}.pdf`;
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        doc.pipe(res);
+
+        // Header
+        doc.fontSize(20).text('INVOICE', { align: 'right' });
+        doc.fontSize(10).text(`Invoice #: LM${invNum}`, { align: 'right' });
+        doc.text(`Date: ${new Date(wr.created_at).toLocaleDateString()}`, { align: 'right' });
+        doc.moveDown();
+
+        // Bill From (Blogger)
+        doc.fontSize(12).font('Helvetica-Bold').text('Bill From:');
+        doc.fontSize(10).font('Helvetica').text(wr.name);
+        doc.text(`Email: ${wr.email}`);
+        doc.text(`Phone: ${wr.phone || 'N/A'}`);
+        doc.text(`Country: ${wr.country_name || 'N/A'}`);
+        doc.moveDown();
+
+        // Bill To (Company)
+        doc.fontSize(12).font('Helvetica-Bold').text('Bill To:');
+        doc.fontSize(10).font('Helvetica').text('Link Management');
+        doc.text('Digital Services HQ');
+        doc.text('support@linkmanagement.com');
+        doc.moveDown();
+
+        // Items Table Header
+        const tableTop = 300;
+        doc.fontSize(10).font('Helvetica-Bold');
+        doc.text('Service/Link', 50, tableTop);
+        doc.text('Order ID', 350, tableTop);
+        doc.text('Amount', 480, tableTop, { align: 'right' });
+
+        doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
+
+        // Items
+        let y = tableTop + 25;
+        doc.font('Helvetica');
+        itemsResult.rows.forEach(item => {
+            const price = `$${parseFloat(item.price || 0).toFixed(2)}`;
+            const link = item.submit_url || item.root_domain || 'N/A';
+            const orderId = item.manual_order_id || 'N/A';
+
+            doc.text(link.substring(0, 50), 50, y);
+            doc.text(orderId, 350, y);
+            doc.text(price, 480, y, { align: 'right' });
+            y += 20;
+        });
+
+        doc.moveTo(50, y).lineTo(550, y).stroke();
+        y += 10;
+
+        // Total
+        doc.fontSize(12).font('Helvetica-Bold');
+        doc.text('Total', 350, y);
+        doc.text(`$${totalAmount.toFixed(2)}`, 480, y, { align: 'right' });
+
+        // Footer
+        doc.fontSize(10).font('Helvetica-Oblique').text('Thank you for your business!', 50, 700, { align: 'center' });
+
+        doc.end();
+    } catch (error) {
+        console.error('PDF Error:', error);
+        if (!res.headersSent) {
+            next(error);
+        }
+    }
+};
+
 module.exports = {
     getMyTasks,
     getTaskById,
@@ -1579,6 +1817,8 @@ module.exports = {
     requestWithdrawal,
     getWithdrawals,
     getInvoices,
+    getInvoiceDetail,
+    downloadInvoicePdf,
     getStatistics,
     getMySites,
     addSite,

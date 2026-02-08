@@ -228,9 +228,7 @@ const getDashboardStats = async (req, res, next) => {
             [writerId]
         );
 
-        // 2. Order Added Notifications - tasks assigned to writer today
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+        // 2. Order Added Notifications - tasks assigned to writer (all time)
         const ordersAddedResult = await dbQuery(
             `SELECT 
                 nop.id,
@@ -242,9 +240,8 @@ const getDashboardStats = async (req, res, next) => {
              FROM new_order_processes nop
              JOIN new_orders no ON nop.new_order_id = no.id
              WHERE nop.writer_id = $1 
-               AND nop.created_at >= $2
              ORDER BY nop.created_at DESC`,
-            [writerId, today]
+            [writerId]
         );
 
         // 3. Rejected Notifications - tasks rejected by manager

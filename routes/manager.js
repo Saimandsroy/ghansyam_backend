@@ -36,6 +36,8 @@ router.get('/rejected-orders', managerController.getRejectedOrders);
 
 // WORKFLOW STEP 1: Create Order and push to Team
 router.post('/orders', managerController.createOrder);
+// SUPER WORKFLOW: Create order and push directly to Writer or Blogger (bypass steps)
+router.post('/orders/create/chain', managerController.createOrderChain);
 router.patch('/tasks/:id/assign-team', managerController.assignToTeam);
 
 // WORKFLOW STEP 2: Approve/Reject Team submission

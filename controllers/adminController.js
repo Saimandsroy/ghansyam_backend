@@ -8,6 +8,7 @@ const csv = require('csv-parser');
 const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
+const PDFDocument = require('pdfkit');
 
 // Configure multer for file uploads
 const upload = multer({ dest: 'uploads/' });
@@ -916,6 +917,8 @@ const getWithdrawalRequestDetail = async (req, res, next) => {
              WHERE wr.id = $1`,
             [id]
         );
+
+        console.log(`[DEBUG] wrResult count: ${wrResult.rows.length}`);
 
         if (wrResult.rows.length === 0) {
             return res.status(404).json({
@@ -2484,6 +2487,297 @@ const deleteCountry = async (req, res, next) => {
 };
 
 
+
+
+/**
+ * @route   GET /api/admin/bloggers-stats
+ * @desc    Get all bloggers with stats (wallet, orders) for admin list
+ * @access  Admin only
+ */
+const getBloggerStats = async (req, res, next) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const offset = (page - 1) * limit;
+        const { name, email, walletMin, walletMax } = req.query;
+
+        // Build WHERE clause
+        let whereClause = "WHERE u.role IN ('vendor', 'Vendor', 'Blogger', 'blogger')";
+        const params = [];
+        let paramIndex = 1;
+
+        if (name) {
+            whereClause += ` AND LOWER(u.name) LIKE LOWER($${paramIndex++})`;
+            params.push(`%${name}%`);
+        }
+        if (email) {
+            whereClause += ` AND LOWER(u.email) LIKE LOWER($${paramIndex++})`;
+            params.push(`%${email}%`);
+        }
+
+        // Get total count
+        const countResult = await query(`SELECT COUNT(*) as total FROM users u ${whereClause}`, params);
+        const total = parseInt(countResult.rows[0].total);
+
+        // Get bloggers with stats
+        const result = await query(`
+            SELECT 
+                u.id, u.name, u.email, u.status as is_active, 
+                u.last_login, u.login_count, u.created_at,
+                COALESCE(w.balance, 0) as wallet_balance,
+                (SELECT COUNT(*) FROM new_order_process_details nopd 
+                 JOIN new_sites ns ON nopd.new_site_id = ns.id 
+                 WHERE ns.uploaded_user_id = u.id) as total_orders,
+                (SELECT COUNT(*) FROM new_order_process_details nopd 
+                 JOIN new_sites ns ON nopd.new_site_id = ns.id 
+                 WHERE ns.uploaded_user_id = u.id AND nopd.status IN (5, 6, 7)) as pending_orders,
+                (SELECT COUNT(*) FROM new_order_process_details nopd 
+                 JOIN new_sites ns ON nopd.new_site_id = ns.id 
+                 WHERE ns.uploaded_user_id = u.id AND nopd.status = 8) as completed_orders
+            FROM users u
+            LEFT JOIN wallets w ON u.id = w.user_id
+            ${whereClause}
+            ORDER BY u.created_at DESC
+            LIMIT $${paramIndex++} OFFSET $${paramIndex}
+        `, [...params, limit, offset]);
+
+        res.json({
+            users: result.rows,
+            pagination: { page, limit, total, totalPages: Math.ceil(total / limit) }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ==================== INVOICE MANAGEMENT ====================
+
+/**
+ * @route   GET /api/admin/wallet/invoices/:id
+ * @desc    Get invoice detail for a withdrawal request
+ * @access  Admin only
+ */
+const getInvoiceDetail = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Get withdrawal request and user info
+        const wrResult = await query(
+            `SELECT 
+                wr.id,
+                wr.user_id,
+                wr.status,
+                wr.invoice_number,
+                wr.invoice_pre,
+                wr.created_at,
+                wr.updated_at,
+                u.name as user_name,
+                u.email as user_email,
+                u.whatsapp as phone,
+                cl.name as country_name
+             FROM withdraw_requests wr
+             JOIN users u ON wr.user_id = u.id
+             LEFT JOIN countries_list cl ON u.country_id = cl.id
+             WHERE wr.id = $1`,
+            [id]
+        );
+
+        if (wrResult.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'Invoice not found'
+            });
+        }
+
+        const wr = wrResult.rows[0];
+
+        // Get all orders/items linked to this withdrawal
+        const itemsResult = await query(
+            `SELECT 
+                wh.id,
+                wh.order_detail_id,
+                CASE 
+                    WHEN wh.price > 0 THEN wh.price
+                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
+                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
+                    ELSE 0
+                END as price,
+                nopd.submit_url,
+                ns.root_domain,
+                no.order_id as manual_order_id
+             FROM wallet_histories wh
+             LEFT JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
+             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+             LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+             LEFT JOIN new_orders no ON nop.new_order_id = no.id
+             WHERE wh.withdraw_request_id = $1
+             ORDER BY wh.created_at DESC`,
+            [id]
+        );
+
+        // Calculate total
+        const totalAmount = itemsResult.rows.reduce((sum, row) => sum + parseFloat(row.price || 0), 0);
+
+        // Format date
+        const formatDate = (dateStr) => {
+            if (!dateStr) return '';
+            const d = new Date(dateStr);
+            return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        };
+
+        // Format response for frontend AdminInvoiceDetail.jsx
+        res.json({
+            invoice: {
+                number: wr.invoice_pre ? `${wr.invoice_pre}${wr.invoice_number}` : (wr.invoice_number || wr.id),
+                date: formatDate(wr.created_at),
+                paidDate: wr.status === 1 ? formatDate(wr.updated_at) : null,
+                status: wr.status,
+                statusText: wr.status === 1 ? 'PAID' : wr.status === 2 ? 'REJECTED' : 'PENDING'
+            },
+            blogger: {
+                name: wr.user_name || 'N/A',
+                email: wr.user_email || 'N/A',
+                phone: wr.phone || 'N/A',
+                country: wr.country_name || 'N/A'
+            },
+            company: {
+                name: 'Link Management',
+                address: 'Digital Services HQ',
+                email: 'support@linkmanagement.com'
+            },
+            items: itemsResult.rows.map((row) => ({
+                id: row.id,
+                link: row.submit_url || '',
+                orderId: row.manual_order_id || `#${row.order_detail_id}`,
+                amount: `$${parseFloat(row.price || 0).toFixed(2)}`
+            })),
+            total: `$${totalAmount.toFixed(2)}`,
+            note: 'Thank you for your business!'
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   GET /api/admin/wallet/invoices/:id/pdf
+ * @desc    Download invoice as PDF
+ * @access  Admin only
+ */
+const downloadInvoicePdf = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Fetch same data as getInvoiceDetail
+        const wrResult = await query(
+            `SELECT wr.id, wr.status, wr.invoice_number, wr.invoice_pre, wr.created_at, wr.updated_at,
+                    u.name, u.email, u.whatsapp as phone, cl.name as country_name
+             FROM withdraw_requests wr
+             JOIN users u ON wr.user_id = u.id
+             LEFT JOIN countries_list cl ON u.country_id = cl.id
+             WHERE wr.id = $1`,
+            [id]
+        );
+
+        if (wrResult.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
+        const wr = wrResult.rows[0];
+
+        const itemsResult = await query(
+            `SELECT 
+                CASE 
+                    WHEN wh.price > 0 THEN wh.price
+                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
+                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
+                    ELSE 0
+                END as price,
+                nopd.submit_url, 
+                ns.root_domain, 
+                no.order_id as manual_order_id
+             FROM wallet_histories wh
+             LEFT JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
+             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+             LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+             LEFT JOIN new_orders no ON nop.new_order_id = no.id
+             WHERE wh.withdraw_request_id = $1`,
+            [id]
+        );
+
+        const totalAmount = itemsResult.rows.reduce((sum, row) => sum + parseFloat(row.price || 0), 0);
+        const invNum = wr.invoice_pre ? `${wr.invoice_pre}${wr.invoice_number}` : (wr.invoice_number || id);
+
+        // Create PDF
+        const doc = new PDFDocument({ margin: 50 });
+        const filename = `invoice-LM${invNum}.pdf`;
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+        doc.pipe(res);
+
+        // Header
+        doc.fontSize(20).text('INVOICE', { align: 'right' });
+        doc.fontSize(10).text(`Invoice #: LM${invNum}`, { align: 'right' });
+        doc.text(`Date: ${new Date(wr.created_at).toLocaleDateString()}`, { align: 'right' });
+        doc.moveDown();
+
+        // Bill From (Blogger)
+        doc.fontSize(12).font('Helvetica-Bold').text('Bill From:');
+        doc.fontSize(10).font('Helvetica').text(wr.name);
+        doc.text(`Email: ${wr.email}`);
+        doc.text(`Phone: ${wr.phone || 'N/A'}`);
+        doc.text(`Country: ${wr.country_name || 'N/A'}`);
+        doc.moveDown();
+
+        // Bill To (Company)
+        doc.fontSize(12).font('Helvetica-Bold').text('Bill To:');
+        doc.fontSize(10).font('Helvetica').text('Link Management');
+        doc.text('Digital Services HQ');
+        doc.text('support@linkmanagement.com');
+        doc.moveDown();
+
+        // Items Table Header
+        const tableTop = 300;
+        doc.fontSize(10).font('Helvetica-Bold');
+        doc.text('Service/Link', 50, tableTop);
+        doc.text('Order ID', 350, tableTop);
+        doc.text('Amount', 480, tableTop, { align: 'right' });
+
+        doc.moveTo(50, tableTop + 15).lineTo(550, tableTop + 15).stroke();
+
+        // Items
+        let y = tableTop + 25;
+        doc.font('Helvetica');
+        itemsResult.rows.forEach(item => {
+            const price = `$${parseFloat(item.price || 0).toFixed(2)}`;
+            const link = item.submit_url || item.root_domain || 'N/A';
+            const orderId = item.manual_order_id || 'N/A';
+
+            doc.text(link.substring(0, 50), 50, y);
+            doc.text(orderId, 350, y);
+            doc.text(price, 480, y, { align: 'right' });
+            y += 20;
+        });
+
+        doc.moveTo(50, y).lineTo(550, y).stroke();
+        y += 10;
+
+        // Total
+        doc.fontSize(12).font('Helvetica-Bold');
+        doc.text('Total', 350, y);
+        doc.text(`$${totalAmount.toFixed(2)}`, 480, y, { align: 'right' });
+
+        // Footer
+        doc.fontSize(10).font('Helvetica-Oblique').text('Thank you for your business!', 50, 700, { align: 'center' });
+
+        doc.end();
+    } catch (error) {
+        console.error('PDF Error:', error);
+        if (!res.headersSent) {
+            next(error);
+        }
+    }
+};
+
 module.exports = {
     getAllUsers,
     createUser,
@@ -2522,6 +2816,8 @@ module.exports = {
     rejectBulkRequest,
     // Sites List (same as manager)
     getWebsitesList,
+    // Bloggers Stats
+    getBloggerStats,
     // Careers Management
     getCareers,
     createCareer,
@@ -2545,5 +2841,8 @@ module.exports = {
     createCountry,
     getCountryById,
     updateCountry,
-    deleteCountry
+    deleteCountry,
+    // Invoice Management
+    getInvoiceDetail,
+    downloadInvoicePdf
 };
