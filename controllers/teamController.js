@@ -530,10 +530,10 @@ const submitWebsitesToManager = async (req, res, next) => {
 
             const insertResult = await query(
                 `INSERT INTO new_order_process_details 
-                 (new_order_process_id, new_site_id, note, doc_urls, price, created_at, updated_at, status)
-                 VALUES ($1, $2, $3, $4, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 2)
+                 (new_order_process_id, new_site_id, note, doc_urls, ourl, price, created_at, updated_at, status)
+                 VALUES ($1, $2, $3, $4, $5, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 2)
                  RETURNING id`,
-                [processId, websiteId, siteData?.note || null, siteData?.copyUrl || null]
+                [processId, websiteId, siteData?.note || null, siteData?.copyUrl || null, siteData?.copyUrl || null]
             );
             console.log(`Inserted detail ID: ${insertResult.rows[0]?.id}`);
         }

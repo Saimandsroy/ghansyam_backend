@@ -266,6 +266,65 @@ const uploadWebsitesCSV = async (req, res, next) => {
 };
 
 /**
+ * @route   GET /api/admin/websites/:id
+ * @desc    Get website by ID for editing
+ * @access  Admin only
+ */
+const getWebsiteById = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Return raw new_sites columns so EditSite.jsx field mapping works directly
+        const result = await query(
+            `SELECT 
+                ns.id,
+                ns.root_domain,
+                ns.niche,
+                ns.website_niche,
+                ns.country_source,
+                ns.spam_score,
+                ns.sample_url,
+                ns.website_status,
+                ns.href_url,
+                ns.marked_sponsor,
+                ns.grey_niche_types,
+                ns.da,
+                ns.dr,
+                ns.traffic,
+                ns.gp_price,
+                ns.rd,
+                ns.niche_edit_price,
+                ns.deal_cbd_casino,
+                ns.fc_gp,
+                ns.fc_ne,
+                ns.paypal_id,
+                ns.whatsapp,
+                ns.skype,
+                ns.site_status,
+                ns.uploaded_user_id as blogger_id,
+                ns.created_at,
+                ns.updated_at,
+                u.name as blogger_name
+             FROM new_sites ns
+             LEFT JOIN users u ON ns.uploaded_user_id = u.id
+             WHERE ns.id = $1`,
+            [id]
+        );
+
+        if (!result.rows[0]) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'Website not found'
+            });
+        }
+
+        res.json(result.rows[0]);
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
  * @route   PUT /api/admin/websites/:id
  * @desc    Update website
  * @access  Admin only
@@ -1184,11 +1243,11 @@ const downloadSiteFormat = async (req, res, next) => {
 };
 
 /**
- * @route   POST /api/admin/sites/upload-excel
- * @desc    Upload and import sites from Excel file
+ * @route   POST /api/admin/sites/upload-excel-preview
+ * @desc    Upload Excel file, parse it, and return preview (no DB changes)
  * @access  Admin only
  */
-const uploadSitesExcel = async (req, res, next) => {
+const previewSitesExcel = async (req, res, next) => {
     try {
         if (!req.file) {
             return res.status(400).json({
@@ -1213,85 +1272,158 @@ const uploadSitesExcel = async (req, res, next) => {
         const worksheet = workbook.Sheets[sheetName];
         const data = XLSX.utils.sheet_to_json(worksheet);
 
+        // Clean up uploaded file immediately (we already read it)
+        fs.unlinkSync(req.file.path);
+
         if (data.length === 0) {
-            fs.unlinkSync(req.file.path);
             return res.status(400).json({
                 error: 'Validation Error',
                 message: 'Excel file is empty'
             });
         }
 
-        const insertedSites = [];
+        const validSites = [];
+        const conflicts = [];
         const errors = [];
+
+        // Helper to get value with various key variations
+        const getVal = (row, keys) => {
+            for (const key of keys) {
+                if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
+                const trimmedWithSpaces = Object.keys(row).find(k => k.trim() === key.trim());
+                if (trimmedWithSpaces && row[trimmedWithSpaces] !== undefined && row[trimmedWithSpaces] !== null && row[trimmedWithSpaces] !== '') {
+                    return row[trimmedWithSpaces];
+                }
+            }
+            return null;
+        };
 
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
-            const rowNum = i + 2; // Excel rows start at 1, plus header row
+            const rowNum = i + 2;
 
             try {
-                // Helper to get value with various key variations (handles spaces in column names)
-                const getVal = (keys) => {
-                    for (const key of keys) {
-                        if (row[key] !== undefined && row[key] !== null && row[key] !== '') return row[key];
-                        // Try trimmed key match
-                        const trimmedWithSpaces = Object.keys(row).find(k => k.trim() === key.trim());
-                        if (trimmedWithSpaces && row[trimmedWithSpaces] !== undefined && row[trimmedWithSpaces] !== null && row[trimmedWithSpaces] !== '') {
-                            return row[trimmedWithSpaces];
-                        }
-                    }
-                    return null;
-                };
-
-                // Map Excel columns to database columns (comprehensive mapping with exact Excel column names)
                 const site = {
-                    root_domain: getVal(['Root Domain', 'root_domain', 'Domain', 'domain']) || '',
-                    niche: getVal(['Website Niche', 'website_niche', 'Niche', 'niche']) || '',
-                    category: getVal(['Main Category', 'Category', 'category']) || '',
-                    da: getVal(['DA', 'da']),
-                    dr: getVal(['DR', 'dr']),
-                    traffic: getVal(['Traffic', 'traffic']),
-                    traffic_source: getVal(['Traffic', 'traffic', 'Traffic Source', 'traffic_source']),
-                    rd: getVal(['RD', 'rd']),
-                    gp_price: getVal(['GP Agreed Price', 'GP Price', 'gp_price', 'GP']) || '',
-                    niche_edit_price: getVal(['NE Agreed Price', 'Niche Agreed Price', 'Niche Price', 'Niche Edit Price', 'niche_edit_price', 'NE Price']) || '',
-                    fc_gp: getVal(['FC GP', 'FCGP', 'fc_gp']),
-                    fc_ne: getVal(['FC NE', 'FCNE', 'fc_ne']),
-                    spam_score: getVal(['Spam Score', 'Spam', 'spam_score']),
-                    word_count: getVal(['Word Count', 'word_count']),
-                    sample_url: getVal(['Sample post', 'Sample URL', 'sample_url']) || '',
-                    email: getVal(['Email', 'email']) || '',
-                    whatsapp: getVal(['whatsapp', 'WhatsApp', 'Whatsapp']) || '',
-                    skype: getVal(['skype', 'Skype']) || '',
-                    paypal_id: getVal(['Paypal id', 'PayPal ID', 'PayPal', 'paypal_id']) || '',
-                    country_source: getVal(['Country Source', 'Country', 'country_source']) || '',
-                    website_niche: getVal(['Website Niche', 'website_niche', 'Niche']) || '',
-                    website_status: getVal(['Website Status', 'website_status']) || '',
-                    marked_sponsor: getVal(['Marked Sponsor', 'marked_sponsor']) || '',
-                    accept_grey_niche: getVal(['Grey Niche', 'grey_niche', 'accept_grey_niche']) || '',
-                    total_time: getVal(['Total time', 'total_time']),
-                    href_url: getVal(['Href url', 'href_url']) || '',
-                    site_status: getVal(['Status', 'status']) || '1',
-                    uploaded_user_id: req.user.id,
-                    domain_type: getVal(['Domain Type', 'domain_type']) || '',
-                    association_type: getVal(['Association Type', 'association_type']) || ''
+                    root_domain: getVal(row, ['Root Domain', 'root_domain', 'Domain', 'domain']) || '',
+                    niche: getVal(row, ['Website Niche', 'website_niche', 'Niche', 'niche']) || '',
+                    category: getVal(row, ['Main Category', 'Category', 'category']) || '',
+                    da: getVal(row, ['DA', 'da']),
+                    dr: getVal(row, ['DR', 'dr']),
+                    traffic: getVal(row, ['Traffic', 'traffic']),
+                    traffic_source: getVal(row, ['Traffic', 'traffic', 'Traffic Source', 'traffic_source']),
+                    rd: getVal(row, ['RD', 'rd']),
+                    gp_price: getVal(row, ['GP Agreed Price', 'GP Price', 'gp_price', 'GP']) || '',
+                    niche_edit_price: getVal(row, ['NE Agreed Price', 'Niche Agreed Price', 'Niche Price', 'Niche Edit Price', 'niche_edit_price', 'NE Price']) || '',
+                    fc_gp: getVal(row, ['FC GP', 'FCGP', 'fc_gp']),
+                    fc_ne: getVal(row, ['FC NE', 'FCNE', 'fc_ne']),
+                    spam_score: getVal(row, ['Spam Score', 'Spam', 'spam_score']),
+                    word_count: getVal(row, ['Word Count', 'word_count']),
+                    sample_url: getVal(row, ['Sample post', 'Sample URL', 'sample_url']) || '',
+                    email: getVal(row, ['Email', 'email']) || '',
+                    whatsapp: getVal(row, ['whatsapp', 'WhatsApp', 'Whatsapp']) || '',
+                    skype: getVal(row, ['skype', 'Skype']) || '',
+                    paypal_id: getVal(row, ['Paypal id', 'PayPal ID', 'PayPal', 'paypal_id']) || '',
+                    country_source: getVal(row, ['Country Source', 'Country', 'country_source']) || '',
+                    website_niche: getVal(row, ['Website Niche', 'website_niche', 'Niche']) || '',
+                    website_status: getVal(row, ['Website Status', 'website_status']) || '',
+                    marked_sponsor: getVal(row, ['Marked Sponsor', 'marked_sponsor']) || '',
+                    accept_grey_niche: getVal(row, ['Grey Niche', 'grey_niche', 'accept_grey_niche']) || '',
+                    total_time: getVal(row, ['Total time', 'total_time']),
+                    href_url: getVal(row, ['Href url', 'href_url']) || '',
+                    site_status: getVal(row, ['Status', 'status']) || '1',
+                    domain_type: getVal(row, ['Domain Type', 'domain_type']) || '',
+                    association_type: getVal(row, ['Association Type', 'association_type']) || ''
                 };
 
-                // Skip rows without domain
                 if (!site.root_domain) {
                     errors.push(`Row ${rowNum}: Missing domain`);
                     continue;
                 }
 
-                // Check if domain already exists
+                // Check if domain already exists in DB
+                const existingCheck = await query(
+                    'SELECT id, root_domain, email, gp_price, niche_edit_price, da, dr, niche FROM new_sites WHERE root_domain = $1 LIMIT 1',
+                    [site.root_domain]
+                );
+
+                if (existingCheck.rows.length > 0) {
+                    // Conflict: domain already exists
+                    conflicts.push({
+                        newSite: site,
+                        existingSite: existingCheck.rows[0]
+                    });
+                } else {
+                    // New site, valid to add
+                    validSites.push(site);
+                }
+            } catch (rowError) {
+                errors.push(`Row ${rowNum}: ${rowError.message}`);
+            }
+        }
+
+        res.json({
+            validSites,
+            conflicts,
+            errors
+        });
+    } catch (error) {
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        next(error);
+    }
+};
+
+/**
+ * @route   POST /api/admin/sites/upload-excel-confirm
+ * @desc    Confirm and persist sites after preview (handles conflict resolution)
+ * @access  Admin only
+ */
+const confirmSitesExcel = async (req, res, next) => {
+    try {
+        const { sites } = req.body;
+
+        if (!sites || !Array.isArray(sites) || sites.length === 0) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'No sites to import'
+            });
+        }
+
+        let inserted = 0;
+        let replaced = 0;
+        let ignored = 0;
+        const importErrors = [];
+
+        for (const site of sites) {
+            try {
+                // If site has a resolution field, it came from a conflict
+                const resolution = site.resolution || 'ADD'; // default: treat as new
+
+                if (resolution === 'IGNORE') {
+                    ignored++;
+                    continue;
+                }
+
+                if (!site.root_domain) {
+                    importErrors.push(`Missing domain for site`);
+                    continue;
+                }
+
+                if (resolution === 'REPLACE') {
+                    // Delete existing and re-insert
+                    await query('DELETE FROM new_sites WHERE root_domain = $1', [site.root_domain]);
+                }
+
+                // Check if domain exists (for ADD or after REPLACE delete)
                 const existingCheck = await query(
                     'SELECT id FROM new_sites WHERE root_domain = $1 LIMIT 1',
                     [site.root_domain]
                 );
 
-                let result;
-                if (existingCheck.rows.length > 0) {
-                    // Update existing site with all fields
-                    result = await query(
+                if (existingCheck.rows.length > 0 && resolution !== 'ADD') {
+                    // Update existing
+                    await query(
                         `UPDATE new_sites SET
                             niche = COALESCE(NULLIF($2, ''), niche),
                             category = COALESCE(NULLIF($3, ''), category),
@@ -1319,21 +1451,21 @@ const uploadSitesExcel = async (req, res, next) => {
                             total_time = COALESCE($25, total_time),
                             href_url = COALESCE(NULLIF($26, ''), href_url),
                             updated_at = CURRENT_TIMESTAMP
-                        WHERE root_domain = $1
-                        RETURNING id, root_domain`,
+                        WHERE root_domain = $1`,
                         [
-                            site.root_domain, site.niche, site.category,
+                            site.root_domain, site.niche || '', site.category || '',
                             site.da, site.dr, site.traffic, site.traffic_source, site.rd,
-                            site.gp_price, site.niche_edit_price, site.fc_gp, site.fc_ne,
-                            site.spam_score, site.word_count, site.sample_url, site.email,
-                            site.whatsapp, site.skype, site.paypal_id, site.country_source,
-                            site.website_niche, site.website_status, site.marked_sponsor,
-                            site.accept_grey_niche, site.total_time, site.href_url
+                            site.gp_price || '', site.niche_edit_price || '', site.fc_gp, site.fc_ne,
+                            site.spam_score, site.word_count, site.sample_url || '', site.email || '',
+                            site.whatsapp || '', site.skype || '', site.paypal_id || '', site.country_source || '',
+                            site.website_niche || '', site.website_status || '', site.marked_sponsor || '',
+                            site.accept_grey_niche || '', site.total_time, site.href_url || ''
                         ]
                     );
+                    replaced++;
                 } else {
-                    // Insert new site with all fields
-                    result = await query(
+                    // Insert new site
+                    await query(
                         `INSERT INTO new_sites (
                             root_domain, niche, category, da, dr, traffic, traffic_source, rd, 
                             gp_price, niche_edit_price, fc_gp, fc_ne, spam_score, word_count, 
@@ -1341,45 +1473,48 @@ const uploadSitesExcel = async (req, res, next) => {
                             website_niche, website_status, marked_sponsor, accept_grey_niche,
                             total_time, href_url, site_status, uploaded_user_id,
                             domain_type, association_type, created_at, updated_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                        RETURNING id, root_domain`,
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
                         [
-                            site.root_domain, site.niche, site.category,
+                            site.root_domain, site.niche || '', site.category || '',
                             site.da, site.dr, site.traffic, site.traffic_source, site.rd,
-                            site.gp_price, site.niche_edit_price, site.fc_gp, site.fc_ne,
-                            site.spam_score, site.word_count, site.sample_url, site.email,
-                            site.whatsapp, site.skype, site.paypal_id, site.country_source,
-                            site.website_niche, site.website_status, site.marked_sponsor,
-                            site.accept_grey_niche, site.total_time, site.href_url,
-                            site.site_status, site.uploaded_user_id,
-                            site.domain_type, site.association_type
+                            site.gp_price || '', site.niche_edit_price || '', site.fc_gp, site.fc_ne,
+                            site.spam_score, site.word_count, site.sample_url || '', site.email || '',
+                            site.whatsapp || '', site.skype || '', site.paypal_id || '', site.country_source || '',
+                            site.website_niche || '', site.website_status || '', site.marked_sponsor || '',
+                            site.accept_grey_niche || '', site.total_time, site.href_url || '',
+                            site.site_status || '1', req.user.id,
+                            site.domain_type || '', site.association_type || ''
                         ]
                     );
+                    inserted++;
                 }
-
-                insertedSites.push(result.rows[0]);
             } catch (rowError) {
-                errors.push(`Row ${rowNum}: ${rowError.message}`);
+                importErrors.push(`${site.root_domain || 'Unknown'}: ${rowError.message}`);
             }
         }
 
-        // Clean up uploaded file
-        fs.unlinkSync(req.file.path);
-
         res.json({
-            message: 'Excel file imported successfully',
-            total_rows: data.length,
-            inserted: insertedSites.length,
-            errors: errors.length > 0 ? errors : undefined,
-            sites: insertedSites.slice(0, 10) // Return first 10 for preview
+            message: 'Import completed successfully',
+            stats: {
+                inserted,
+                replaced,
+                ignored,
+                errors: importErrors
+            }
         });
     } catch (error) {
-        // Clean up file on error
-        if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
-        }
         next(error);
     }
+};
+
+/**
+ * @route   POST /api/admin/sites/upload-excel
+ * @desc    Legacy: Upload and import sites from Excel file (direct insert)
+ * @access  Admin only
+ */
+const uploadSitesExcel = async (req, res, next) => {
+    // Redirect to the preview flow
+    return previewSitesExcel(req, res, next);
 };
 
 // ==================== CREATE ACCOUNT FROM SITES ====================
@@ -1678,39 +1813,114 @@ const getWebsitesList = async (req, res, next) => {
         const limit = parseInt(req.query.limit) || 50;
         const offset = (page - 1) * limit;
 
-        // Get total count (only active sites)
+        // Build dynamic WHERE conditions as an array
+        const conditions = [`(ns.delete_site IS NULL OR ns.delete_site = 0)`, `ns.site_status = '1'`];
+        const queryParams = [];
+        let paramIndex = 1;
+
+        // Text Search Filters
+        if (req.query.search_domain) {
+            conditions.push(`ns.root_domain ILIKE $${paramIndex}`);
+            queryParams.push(`%${req.query.search_domain}%`);
+            paramIndex++;
+        }
+        if (req.query.search_category) {
+            conditions.push(`(ns.category ILIKE $${paramIndex} OR ns.niche ILIKE $${paramIndex})`);
+            queryParams.push(`%${req.query.search_category}%`);
+            paramIndex++;
+        }
+        if (req.query.search_niche) {
+            conditions.push(`ns.website_niche ILIKE $${paramIndex}`);
+            queryParams.push(`%${req.query.search_niche}%`);
+            paramIndex++;
+        }
+        if (req.query.search_email) {
+            conditions.push(`ns.email ILIKE $${paramIndex}`);
+            queryParams.push(`%${req.query.search_email}%`);
+            paramIndex++;
+        }
+
+        // Dropdown Filters
+        if (req.query.filter_website_status) {
+            conditions.push(`ns.website_status = $${paramIndex}`);
+            queryParams.push(req.query.filter_website_status);
+            paramIndex++;
+        }
+        if (req.query.filter_status && !req.query.filter_website_status) {
+            conditions.push(`ns.website_status = $${paramIndex}`);
+            queryParams.push(req.query.filter_status);
+            paramIndex++;
+        }
+        if (req.query.filter_fc_gp) {
+            if (req.query.filter_fc_gp === 'yes') conditions.push(`(ns.fc_gp IS NOT NULL AND ns.fc_gp != '')`);
+            else if (req.query.filter_fc_gp === 'no') conditions.push(`(ns.fc_gp IS NULL OR ns.fc_gp = '')`);
+        }
+        if (req.query.filter_fc_ne) {
+            if (req.query.filter_fc_ne === 'yes') conditions.push(`(ns.fc_ne IS NOT NULL AND ns.fc_ne != '')`);
+            else if (req.query.filter_fc_ne === 'no') conditions.push(`(ns.fc_ne IS NULL OR ns.fc_ne = '')`);
+        }
+        if (req.query.filter_new_arrival) {
+            if (req.query.filter_new_arrival === 'yes') conditions.push(`ns.created_at >= NOW() - INTERVAL '7 days'`);
+            else if (req.query.filter_new_arrival === 'no') conditions.push(`ns.created_at < NOW() - INTERVAL '7 days'`);
+        }
+        if (req.query.filter_added_on) {
+            conditions.push(`DATE(ns.created_at) = $${paramIndex}`);
+            queryParams.push(req.query.filter_added_on);
+            paramIndex++;
+        }
+
+        // Numeric Range Filters helper
+        const addRangeFilter = (paramKey, dbCol) => {
+            const val = req.query[`filter_${paramKey}_val`];
+            const op = req.query[`filter_${paramKey}_op`];
+            if (val && op) {
+                let sqlOp = '=';
+                if (op === '>') sqlOp = '>';
+                else if (op === '<') sqlOp = '<';
+                conditions.push(`COALESCE(${dbCol}::numeric, 0) ${sqlOp} $${paramIndex}`);
+                queryParams.push(parseFloat(val));
+                paramIndex++;
+            }
+        };
+
+        addRangeFilter('da', 'ns.da');
+        addRangeFilter('dr', 'ns.dr');
+        addRangeFilter('rd', 'ns.rd');
+        addRangeFilter('traffic', 'ns.traffic_source');
+        addRangeFilter('gp_price', 'ns.gp_price');
+        addRangeFilter('niche_price', 'ns.niche_edit_price');
+
+        const whereClause = conditions.join(' AND ');
+
+        // Execute Count query (same filters, no pagination)
         const countResult = await query(
-            `SELECT COUNT(*) as total FROM new_sites
-             WHERE (delete_site IS NULL OR delete_site = 0) AND site_status = '1'`
+            `SELECT COUNT(*) as total FROM new_sites ns WHERE ${whereClause}`,
+            queryParams
         );
         const total = parseInt(countResult.rows[0].total);
         const totalPages = Math.ceil(total / limit);
 
-        // Get paginated sites (only active sites) with LO Created from orders
+        // Execute Data query (with pagination)
+        const dataParams = [...queryParams, limit, offset];
         const result = await query(
             `SELECT ns.id, ns.root_domain, ns.niche, ns.category,
-                    ns.da, ns.dr, ns.rd, ns.spam_score, ns.traffic_source as traffic,
-                    ns.gp_price, ns.niche_edit_price, ns.deal_cbd_casino,
-                    ns.email, ns.site_status, ns.website_status,
-                    ns.fc_gp, ns.fc_ne, ns.website_niche, ns.sample_url, ns.href_url,
-                    ns.paypal_id, ns.skype, ns.whatsapp, ns.country_source,
-                    ns.created_at, ns.updated_at,
-                    (SELECT MAX(nopd.created_at) FROM new_order_process_details nopd WHERE nopd.new_site_id = ns.id) as lo_created_at
+                ns.da, ns.dr, ns.rd, ns.spam_score, ns.traffic_source as traffic,
+                ns.gp_price, ns.niche_edit_price, ns.deal_cbd_casino,
+                ns.email, ns.site_status, ns.website_status,
+                ns.fc_gp, ns.fc_ne, ns.website_niche, ns.sample_url, ns.href_url,
+                ns.paypal_id, ns.skype, ns.whatsapp, ns.country_source,
+                ns.created_at, ns.updated_at,
+                (SELECT MAX(nopd.created_at) FROM new_order_process_details nopd WHERE nopd.new_site_id = ns.id) as lo_created_at
              FROM new_sites ns
-             WHERE (ns.delete_site IS NULL OR ns.delete_site = 0) AND ns.site_status = '1'
+             WHERE ${whereClause}
              ORDER BY ns.created_at DESC
-             LIMIT $1 OFFSET $2`,
-            [limit, offset]
+             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+            dataParams
         );
 
         res.json({
             sites: result.rows,
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages
-            }
+            pagination: { page, limit, total, totalPages }
         });
     } catch (error) {
         next(error);
@@ -2778,12 +2988,244 @@ const downloadInvoicePdf = async (req, res, next) => {
     }
 };
 
+// ==================== USER MANAGEMENT EXTENDED ====================
+
+/**
+ * @route   PUT /api/admin/users/:id/reset-password
+ * @desc    Reset a user's password to a random generated password
+ * @access  Admin only
+ */
+const resetUserPassword = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Check user exists
+        const userResult = await query('SELECT id, name, email FROM users WHERE id = $1', [id]);
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Generate random password
+        const crypto = require('crypto');
+        const newPassword = crypto.randomBytes(6).toString('hex'); // 12 char random password
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        // Update user
+        await query('UPDATE users SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [hashedPassword, id]);
+
+        res.json({
+            message: 'Password reset successfully',
+            newPassword,
+            user: userResult.rows[0]
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   PUT /api/admin/users/:id/change-password
+ * @desc    Change a user's password to a specific password
+ * @access  Admin only
+ */
+const changeUserPassword = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { password } = req.body;
+
+        if (!password || password.length < 6) {
+            return res.status(400).json({ message: 'Password must be at least 6 characters' });
+        }
+
+        // Check user exists
+        const userResult = await query('SELECT id FROM users WHERE id = $1', [id]);
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Hash and update password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await query('UPDATE users SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [hashedPassword, id]);
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   GET /api/admin/users/:id/permissions
+ * @desc    Get a user's role and permissions
+ * @access  Admin only
+ */
+const getUserPermissions = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        const userResult = await query(
+            'SELECT id, name, email, role, status as is_active FROM users WHERE id = $1',
+            [id]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const user = userResult.rows[0];
+
+        res.json({
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                is_active: user.is_active
+            },
+            permissions: {
+                role: user.role,
+                canManageOrders: ['Admin', 'Manager', 'Team'].includes(user.role),
+                canManageSites: ['Admin', 'Manager'].includes(user.role),
+                canManageUsers: ['Admin'].includes(user.role),
+                canViewReports: ['Admin', 'Manager'].includes(user.role),
+                canManageWallet: ['Admin'].includes(user.role)
+            }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   PUT /api/admin/users/:id/permissions
+ * @desc    Update a user's role/permissions
+ * @access  Admin only
+ */
+const updateUserPermissions = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { permissions } = req.body;
+
+        if (!permissions || !permissions.role) {
+            return res.status(400).json({ message: 'Role is required in permissions' });
+        }
+
+        const validRoles = ['Admin', 'Manager', 'Team', 'Writer', 'Blogger'];
+        if (!validRoles.includes(permissions.role)) {
+            return res.status(400).json({ message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+        }
+
+        // Check user exists
+        const userResult = await query('SELECT id FROM users WHERE id = $1', [id]);
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Update role
+        await query(
+            'UPDATE users SET role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+            [permissions.role, id]
+        );
+
+        res.json({ message: 'Permissions updated successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ==================== BLOGGER PERFORMANCE ====================
+
+/**
+ * @route   GET /api/admin/bloggers/:id/performance
+ * @desc    Get performance stats for a specific blogger
+ * @access  Admin only
+ */
+const getBloggerPerformance = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+
+        // Get blogger info
+        const userResult = await query(
+            `SELECT id, name, email, status as is_active, created_at,
+                    COALESCE((SELECT balance FROM wallets WHERE user_id = users.id), 0) as wallet_balance
+             FROM users WHERE id = $1`,
+            [id]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ message: 'Blogger not found' });
+        }
+
+        const blogger = userResult.rows[0];
+
+        // Get order stats
+        const statsResult = await query(`
+            SELECT 
+                COUNT(*) as total_orders,
+                COUNT(*) FILTER (WHERE nopd.status IN (5, 6, 7)) as pending_orders,
+                COUNT(*) FILTER (WHERE nopd.status = 8) as completed_orders,
+                COUNT(*) FILTER (WHERE nopd.status IN (9, 10)) as rejected_orders,
+                COALESCE(SUM(
+                    CASE 
+                        WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
+                        WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
+                        ELSE 0
+                    END
+                ) FILTER (WHERE nopd.status = 8), 0) as total_earnings
+            FROM new_order_process_details nopd
+            JOIN new_sites ns ON nopd.new_site_id = ns.id
+            WHERE ns.uploaded_user_id = $1
+        `, [id]);
+
+        // Get websites count
+        const websitesResult = await query(
+            'SELECT COUNT(*) as total FROM new_sites WHERE uploaded_user_id = $1',
+            [id]
+        );
+
+        // Get recent orders
+        const recentOrdersResult = await query(`
+            SELECT nopd.id, nopd.status, nopd.created_at, nopd.submit_url,
+                   ns.root_domain,
+                   CASE 
+                       WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
+                       WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
+                       ELSE 0
+                   END as price
+            FROM new_order_process_details nopd
+            JOIN new_sites ns ON nopd.new_site_id = ns.id
+            WHERE ns.uploaded_user_id = $1
+            ORDER BY nopd.created_at DESC
+            LIMIT 10
+        `, [id]);
+
+        const stats = statsResult.rows[0] || {};
+
+        res.json({
+            blogger,
+            stats: {
+                total_orders: parseInt(stats.total_orders) || 0,
+                pending_orders: parseInt(stats.pending_orders) || 0,
+                completed_orders: parseInt(stats.completed_orders) || 0,
+                rejected_orders: parseInt(stats.rejected_orders) || 0,
+                total_earnings: parseFloat(stats.total_earnings) || 0,
+                total_websites: parseInt(websitesResult.rows[0]?.total) || 0
+            },
+            recentOrders: recentOrdersResult.rows
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 module.exports = {
     getAllUsers,
     createUser,
     updateUser,
     deleteUser,
     getAllWebsites,
+    getWebsiteById,
     createWebsite,
     uploadWebsitesCSV,
     upload,
@@ -2806,6 +3248,8 @@ module.exports = {
     // Sites Excel Management
     downloadSiteFormat,
     uploadSitesExcel,
+    previewSitesExcel,
+    confirmSitesExcel,
     // Create Account From Sites
     getSitesForAccountCreation,
     createAccountsFromSites,
@@ -2844,5 +3288,13 @@ module.exports = {
     deleteCountry,
     // Invoice Management
     getInvoiceDetail,
-    downloadInvoicePdf
+    downloadInvoicePdf,
+    // User Management Extended
+    resetUserPassword,
+    changeUserPassword,
+    getUserPermissions,
+    updateUserPermissions,
+    // Blogger Performance
+    getBloggerPerformance
 };
+

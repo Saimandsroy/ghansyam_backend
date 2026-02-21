@@ -18,6 +18,7 @@ const bloggerRoutes = require('./routes/blogger');
 const accountantRoutes = require('./routes/accountant');
 const configRoutes = require('./routes/config');
 const threadRoutes = require('./routes/threads');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -85,7 +86,39 @@ io.on('connection', (socket) => {
     console.log(`📋 Socket ${socket.id} joined orders-list`);
   });
 
+  // ===== Chat Events =====
+  // Join a chat room (conversation)
+  socket.on('join_chat', (threadId) => {
+    socket.join(`chat_${threadId}`);
+    console.log(`💬 Socket ${socket.id} joined chat_${threadId}`);
+  });
+
+  // Leave a chat room
+  socket.on('leave_chat', (threadId) => {
+    socket.leave(`chat_${threadId}`);
+    console.log(`💬 Socket ${socket.id} left chat_${threadId}`);
+  });
+
+  // Typing indicator
+  socket.on('typing', ({ threadId, userName }) => {
+    socket.to(`chat_${threadId}`).emit('user_typing', { userName, threadId });
+  });
+
+  // Stop typing indicator
+  socket.on('stop_typing', ({ threadId }) => {
+    socket.to(`chat_${threadId}`).emit('user_stop_typing', { threadId });
+  });
+
+  // User online tracking
+  socket.on('user_online', (userId) => {
+    socket.userId = userId;
+    socket.broadcast.emit('user_status', { userId, online: true });
+  });
+
   socket.on('disconnect', () => {
+    if (socket.userId) {
+      socket.broadcast.emit('user_status', { userId: socket.userId, online: false });
+    }
     console.log(`🔌 Client disconnected: ${socket.id}`);
   });
 });
@@ -147,6 +180,7 @@ app.use('/api/blogger', bloggerRoutes);
 app.use('/api/accountant', accountantRoutes);
 app.use('/api/config', configRoutes);
 app.use('/api/threads', threadRoutes);
+app.use('/api/chat', chatRoutes);
 
 // 404 handler
 app.use((req, res) => {

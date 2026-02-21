@@ -153,22 +153,44 @@ class Website {
      * Update website
      */
     static async update(id, updates) {
-        // Map field names
+        // Map field names from frontend to database columns
         const fieldMapping = {
             'domain_url': 'root_domain',
             'root_domain': 'root_domain',
             'category': 'niche',
             'niche': 'niche',
+            'website_niche': 'website_niche',
+            'traffic_source': 'country_source',
+            'country_source': 'country_source',
+            'spam_score': 'spam_score',
+            'sample_url': 'sample_url',
+            'website_status': 'website_status',
+            'href_url': 'href_url',
+            'marked_sponsor': 'marked_sponsor',
+            'grey_niche_types': 'grey_niche_types',
             'da_pa_score': 'da',
             'da': 'da',
             'dr': 'dr',
             'traffic': 'traffic',
             'rd': 'rd',
             'niche_price': 'niche_edit_price',
+            'niche_edit_price': 'niche_edit_price',
             'gp_price': 'gp_price',
+            'deal_cbd_casino': 'deal_cbd_casino',
+            'fc_gp': 'fc_gp',
+            'fc_ne': 'fc_ne',
+            'paypal_id': 'paypal_id',
+            'whatsapp': 'whatsapp',
+            'skype': 'skype',
             'status': 'site_status',
+            'site_status': 'site_status',
             'blogger_id': 'uploaded_user_id'
         };
+
+        // Fields that are double precision in PostgreSQL - empty strings must become null
+        const numericFields = new Set([
+            'da', 'dr', 'traffic', 'rd', 'fc_gp', 'fc_ne', 'total_time'
+        ]);
 
         const setClause = [];
         const params = [];
@@ -177,8 +199,13 @@ class Website {
         for (const [key, value] of Object.entries(updates)) {
             const dbField = fieldMapping[key];
             if (dbField) {
+                // Convert empty strings to null for numeric columns
+                let sanitized = value;
+                if (numericFields.has(dbField) && (value === '' || value === null || value === undefined)) {
+                    sanitized = null;
+                }
                 setClause.push(`${dbField} = $${paramIndex}`);
-                params.push(value);
+                params.push(sanitized);
                 paramIndex++;
             }
         }

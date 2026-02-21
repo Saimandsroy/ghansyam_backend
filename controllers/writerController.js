@@ -66,13 +66,25 @@ const getTaskById = async (req, res, next) => {
 
 /**
  * @route   POST /api/writer/tasks/:id/submit-content
- * @desc    Submit written content (Batch update)
+ * @desc    Submit written content (Batch update, supports file uploads)
  * @access  Writer only
  */
 const submitContent = async (req, res, next) => {
     try {
         const { id } = req.params;
-        const { website_submissions } = req.body; // Array of submission objects
+
+        // When sent via FormData, website_submissions may be a JSON string
+        let website_submissions = req.body.website_submissions;
+        if (typeof website_submissions === 'string') {
+            try {
+                website_submissions = JSON.parse(website_submissions);
+            } catch (e) {
+                return res.status(400).json({
+                    error: 'Validation Error',
+                    message: 'Invalid website_submissions format'
+                });
+            }
+        }
 
         // Validation
         if (!website_submissions || !Array.isArray(website_submissions) || website_submissions.length === 0) {
@@ -99,6 +111,19 @@ const submitContent = async (req, res, next) => {
             });
         }
 
+        // Build a map of uploaded files keyed by detail_id
+        // Files are sent with fieldname pattern: file_<detail_id>
+        const fileMap = {};
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                // fieldname is like "file_123"
+                const match = file.fieldname.match(/^file_(\d+)$/);
+                if (match) {
+                    fileMap[match[1]] = `/uploads/content-files/${file.filename}`;
+                }
+            }
+        }
+
         // Check if Niche Edit order
         const isNicheEdit = task.order_type?.toLowerCase().includes('niche');
 
@@ -119,6 +144,9 @@ const submitContent = async (req, res, next) => {
                 global_note
             } = submission;
 
+            // Get file path for this detail (if uploaded)
+            const filePath = fileMap[String(detail_id)] || null;
+
             if (isNicheEdit) {
                 // For Niche Edit orders - save insert_after, statement
                 await query(
@@ -127,28 +155,34 @@ const submitContent = async (req, res, next) => {
                          statement = $2, 
                          note = $3,
                          type = $4,
+                         upload_doc_file = COALESCE($5, upload_doc_file),
                          updated_at = CURRENT_TIMESTAMP 
-                     WHERE id = $5`,
+                     WHERE id = $6`,
                     [
                         option_type === 'insert' ? insert_after : replace_with,
                         option_type === 'insert' ? insert_statement : replace_statement,
                         global_note || writer_note || null,
                         option_type || 'replace',
+                        filePath,
                         detail_id
                     ]
                 );
             } else {
-                // For Guest Post orders - save doc_urls and note
-                if (content_link && content_link.trim() !== '') {
-                    await query(
-                        `UPDATE new_order_process_details 
-                         SET doc_urls = $1, 
-                             note = $2, 
-                             updated_at = CURRENT_TIMESTAMP 
-                         WHERE id = $3`,
-                        [content_link, global_note || writer_note || null, detail_id]
-                    );
-                }
+                // For Guest Post orders - save doc_urls, note, and upload_doc_file
+                await query(
+                    `UPDATE new_order_process_details 
+                     SET doc_urls = COALESCE(NULLIF($1, ''), doc_urls), 
+                         note = $2,
+                         upload_doc_file = COALESCE($3, upload_doc_file),
+                         updated_at = CURRENT_TIMESTAMP 
+                     WHERE id = $4`,
+                    [
+                        content_link || null,
+                        global_note || writer_note || null,
+                        filePath,
+                        detail_id
+                    ]
+                );
             }
         }
 
@@ -477,6 +511,104 @@ const getCompletedOrderDetail = async (req, res, next) => {
         next(error);
     }
 };
+// ==================== PROFILE MANAGEMENT ====================
+
+/**
+ * @route   GET /api/writer/profile
+ * @desc    Get current writer's profile
+ * @access  Writer only
+ */
+const getProfile = async (req, res, next) => {
+    try {
+        const { query: dbQuery } = require('../config/database');
+        const result = await dbQuery(
+            `SELECT id, name, email, gender, mobile_number, profile_image, whatsapp, skype, created_at
+             FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'User not found'
+            });
+        }
+
+        const user = result.rows[0];
+        res.json({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            gender: user.gender || '',
+            mobile: user.mobile_number || '',
+            profile_image: user.profile_image || '',
+            whatsapp: user.whatsapp || '',
+            skype: user.skype || '',
+            created_at: user.created_at
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   PUT /api/writer/profile
+ * @desc    Update current writer's profile
+ * @access  Writer only
+ */
+const updateProfile = async (req, res, next) => {
+    try {
+        const { name, gender, mobile } = req.body;
+        const { query: dbQuery } = require('../config/database');
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Name is required'
+            });
+        }
+
+        await dbQuery(
+            `UPDATE users SET name = $1, gender = $2, mobile_number = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
+            [name.trim(), gender || null, mobile || null, req.user.id]
+        );
+
+        res.json({ message: 'Profile updated successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   POST /api/writer/profile/image
+ * @desc    Upload writer profile image
+ * @access  Writer only
+ */
+const uploadProfileImage = async (req, res, next) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'No image file provided'
+            });
+        }
+
+        const { query: dbQuery } = require('../config/database');
+        const imagePath = `/uploads/profiles/${req.file.filename}`;
+
+        await dbQuery(
+            `UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [imagePath, req.user.id]
+        );
+
+        res.json({
+            message: 'Profile image uploaded successfully',
+            profile_image: imagePath
+        });
+    } catch (error) {
+        next(error);
+    }
+};
 
 module.exports = {
     getMyTasks,
@@ -485,5 +617,9 @@ module.exports = {
     markInProgress,
     getDashboardStats,
     getCompletedOrders,
-    getCompletedOrderDetail
+    getCompletedOrderDetail,
+    getProfile,
+    updateProfile,
+    uploadProfileImage
 };
+

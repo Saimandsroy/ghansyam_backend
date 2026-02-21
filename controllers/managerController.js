@@ -24,36 +24,54 @@ const { query } = require('../config/database');
  */
 const getDashboardStats = async (req, res, next) => {
     try {
-        // Pending Approvals for Bloggers: status 5 with submit_url means blogger submitted work
-        // and it's waiting for manager to verify and credit
+        const managerId = req.user.id;
+
+        // Pending Approvals for Bloggers: status 7 = blogger submitted URL, awaiting manager verification
+        // CRITICAL: Also check process status and parent order status to exclude completed tasks
         const pendingBloggersResult = await query(
-            `SELECT COUNT(*) as count FROM new_order_process_details 
-             WHERE status = 5 AND submit_url IS NOT NULL AND submit_url != ''`
+            `SELECT COUNT(*) as count 
+             FROM new_order_process_details nopd
+             JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+             JOIN new_orders o ON nop.new_order_id = o.id
+             WHERE nopd.status = 7 
+               AND nop.status = 7
+               AND o.new_order_status < 5
+               AND nop.manager_id = $1`,
+            [managerId]
         );
 
-        // Pending Approvals Teams: status 2 with no further progression
-        // Only show items that are genuinely waiting (not old data that progressed)
+        // Pending Approvals Teams: BOTH order and process status must be 2
+        // Use LATERAL JOIN to get only the latest process record per order
         const pendingTeamsResult = await query(
-            `SELECT COUNT(DISTINCT nop.id) as count 
-             FROM new_order_processes nop
-             WHERE nop.status = 2 
-             AND NOT EXISTS (
-                 SELECT 1 FROM new_order_processes nop2 
-                 WHERE nop2.new_order_id = nop.new_order_id 
-                 AND nop2.status > 2
-             )`
+            `SELECT COUNT(*) as count 
+             FROM new_orders o
+             LEFT JOIN LATERAL (
+                 SELECT status, id 
+                 FROM new_order_processes 
+                 WHERE new_order_id = o.id 
+                 ORDER BY id DESC LIMIT 1
+             ) nop ON true
+             WHERE o.new_order_status = 2 
+               AND nop.status = 2
+               AND o.manager_id = $1`,
+            [managerId]
         );
 
-        // Pending Approvals Writers: status 4 with no further progression
+        // Pending Approvals Writers: BOTH order and process status must be 4
+        // Use LATERAL JOIN to get only the latest process record per order
         const pendingWritersResult = await query(
-            `SELECT COUNT(DISTINCT nop.id) as count 
-             FROM new_order_processes nop
-             WHERE nop.status = 4 
-             AND NOT EXISTS (
-                 SELECT 1 FROM new_order_processes nop2 
-                 WHERE nop2.new_order_id = nop.new_order_id 
-                 AND nop2.status > 4
-             )`
+            `SELECT COUNT(*) as count 
+             FROM new_orders o
+             LEFT JOIN LATERAL (
+                 SELECT status, id 
+                 FROM new_order_processes 
+                 WHERE new_order_id = o.id 
+                 ORDER BY id DESC LIMIT 1
+             ) nop ON true
+             WHERE o.new_order_status = 4 
+               AND nop.status = 4
+               AND o.manager_id = $1`,
+            [managerId]
         );
 
         // Rejected Orders Bloggers (status 11 = Rejected)
@@ -66,7 +84,7 @@ const getDashboardStats = async (req, res, next) => {
             `SELECT COUNT(*) as count FROM threads`
         );
 
-        // Today's Pending Approvals For Bloggers: status 5 with submit_url (truly pending)
+        // Today's Pending Approvals For Bloggers: Apply same filters as main count
         const pendingBloggerApprovalsResult = await query(
             `SELECT 
                 o.order_id,
@@ -82,9 +100,13 @@ const getDashboardStats = async (req, res, next) => {
              JOIN new_orders o ON nop.new_order_id = o.id
              LEFT JOIN users u ON nopd.vendor_id = u.id
              LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
-             WHERE nopd.status = 5 AND nopd.submit_url IS NOT NULL AND nopd.submit_url != ''
+             WHERE nopd.status = 7
+               AND nop.status = 7
+               AND o.new_order_status < 5
+               AND nop.manager_id = $1
              ORDER BY nopd.created_at DESC
-             LIMIT 50`
+             LIMIT 50`,
+            [managerId]
         );
 
         res.json({
@@ -111,10 +133,12 @@ const getDashboardStats = async (req, res, next) => {
  */
 const getTasks = async (req, res, next) => {
     try {
-        const { status } = req.query;
+        const { current_status, status } = req.query;
 
         const filters = {};
-        if (status) filters.current_status = status;
+        // Support both 'current_status' (used by frontend) and 'status' (legacy)
+        if (current_status) filters.current_status = current_status;
+        else if (status) filters.current_status = status;
 
         const tasks = await Task.findAll(filters);
 
@@ -315,7 +339,7 @@ const getPendingFromBloggers = async (req, res, next) => {
                 nopd.submit_url,
                 nopd.anchor,
                 nopd.url as target_url,
-                nopd.ourl as post_url,
+                COALESCE(nopd.ourl, nopd.doc_urls) as post_url,
                 nopd.type as option,
                 nopd.insert_after,
                 nopd.statement,
@@ -339,8 +363,11 @@ const getPendingFromBloggers = async (req, res, next) => {
              JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
              JOIN new_orders no ON nop.new_order_id = no.id
              LEFT JOIN users v ON nopd.vendor_id = v.id
-             WHERE nopd.status = 7
-             ORDER BY nopd.updated_at DESC`
+             WHERE nopd.status = 7 
+               AND no.new_order_status < 5
+               AND nop.manager_id = $1
+             ORDER BY nopd.updated_at DESC`,
+            [req.user.id]
         );
 
         // Map to frontend format matching the screenshot
@@ -1280,11 +1307,12 @@ const getPendingFromTeams = async (req, res, next) => {
  */
 const getPendingFromWriters = async (req, res, next) => {
     try {
-        const allOrders = await Task.findAll({ manager_id: req.user.id });
-        const orders = allOrders.filter(o =>
-            o.current_status === 'SUBMITTED_TO_MANAGER' ||
-            o.current_status === 'PENDING_MANAGER_APPROVAL_2'
-        );
+        // Use database-level filtering with current_status to apply dual-status checking
+        // Both SUBMITTED_TO_MANAGER and PENDING_MANAGER_APPROVAL_2 map to status 4
+        const orders = await Task.findAll({
+            manager_id: req.user.id,
+            current_status: 'PENDING_MANAGER_APPROVAL_2'
+        });
 
         res.json({
             count: orders.length,
@@ -1423,39 +1451,114 @@ const getWebsites = async (req, res, next) => {
         const limit = parseInt(req.query.limit) || 50;
         const offset = (page - 1) * limit;
 
-        // Get total count (only active sites)
+        // Build dynamic WHERE conditions as an array
+        const conditions = [`(ns.delete_site IS NULL OR ns.delete_site = 0)`, `ns.site_status = '1'`];
+        const queryParams = [];
+        let paramIndex = 1;
+
+        // Text Search Filters
+        if (req.query.search_domain) {
+            conditions.push(`ns.root_domain ILIKE $${paramIndex}`);
+            queryParams.push(`%${req.query.search_domain}%`);
+            paramIndex++;
+        }
+        if (req.query.search_category) {
+            conditions.push(`(ns.category ILIKE $${paramIndex} OR ns.niche ILIKE $${paramIndex})`);
+            queryParams.push(`%${req.query.search_category}%`);
+            paramIndex++;
+        }
+        if (req.query.search_niche) {
+            conditions.push(`ns.website_niche ILIKE $${paramIndex}`);
+            queryParams.push(`%${req.query.search_niche}%`);
+            paramIndex++;
+        }
+        if (req.query.search_email) {
+            conditions.push(`ns.email ILIKE $${paramIndex}`);
+            queryParams.push(`%${req.query.search_email}%`);
+            paramIndex++;
+        }
+
+        // Dropdown Filters
+        if (req.query.filter_website_status) {
+            conditions.push(`ns.website_status = $${paramIndex}`);
+            queryParams.push(req.query.filter_website_status);
+            paramIndex++;
+        }
+        if (req.query.filter_status && !req.query.filter_website_status) {
+            conditions.push(`ns.website_status = $${paramIndex}`);
+            queryParams.push(req.query.filter_status);
+            paramIndex++;
+        }
+        if (req.query.filter_fc_gp) {
+            if (req.query.filter_fc_gp === 'yes') conditions.push(`(ns.fc_gp IS NOT NULL AND ns.fc_gp != '')`);
+            else if (req.query.filter_fc_gp === 'no') conditions.push(`(ns.fc_gp IS NULL OR ns.fc_gp = '')`);
+        }
+        if (req.query.filter_fc_ne) {
+            if (req.query.filter_fc_ne === 'yes') conditions.push(`(ns.fc_ne IS NOT NULL AND ns.fc_ne != '')`);
+            else if (req.query.filter_fc_ne === 'no') conditions.push(`(ns.fc_ne IS NULL OR ns.fc_ne = '')`);
+        }
+        if (req.query.filter_new_arrival) {
+            if (req.query.filter_new_arrival === 'yes') conditions.push(`ns.created_at >= NOW() - INTERVAL '7 days'`);
+            else if (req.query.filter_new_arrival === 'no') conditions.push(`ns.created_at < NOW() - INTERVAL '7 days'`);
+        }
+        if (req.query.filter_added_on) {
+            conditions.push(`DATE(ns.created_at) = $${paramIndex}`);
+            queryParams.push(req.query.filter_added_on);
+            paramIndex++;
+        }
+
+        // Numeric Range Filters helper
+        const addRangeFilter = (paramKey, dbCol) => {
+            const val = req.query[`filter_${paramKey}_val`];
+            const op = req.query[`filter_${paramKey}_op`];
+            if (val && op) {
+                let sqlOp = '=';
+                if (op === '>') sqlOp = '>';
+                else if (op === '<') sqlOp = '<';
+                conditions.push(`COALESCE(${dbCol}::numeric, 0) ${sqlOp} $${paramIndex}`);
+                queryParams.push(parseFloat(val));
+                paramIndex++;
+            }
+        };
+
+        addRangeFilter('da', 'ns.da');
+        addRangeFilter('dr', 'ns.dr');
+        addRangeFilter('rd', 'ns.rd');
+        addRangeFilter('traffic', 'ns.traffic_source');
+        addRangeFilter('gp_price', 'ns.gp_price');
+        addRangeFilter('niche_price', 'ns.niche_edit_price');
+
+        const whereClause = conditions.join(' AND ');
+
+        // Execute Count query (same filters, no pagination)
         const countResult = await query(
-            `SELECT COUNT(*) as total FROM new_sites
-WHERE(delete_site IS NULL OR delete_site = 0) AND site_status = '1'`
+            `SELECT COUNT(*) as total FROM new_sites ns WHERE ${whereClause}`,
+            queryParams
         );
         const total = parseInt(countResult.rows[0].total);
         const totalPages = Math.ceil(total / limit);
 
-        // Get paginated sites (only active sites) with LO Created from orders
+        // Execute Data query (with pagination)
+        const dataParams = [...queryParams, limit, offset];
         const result = await query(
             `SELECT ns.id, ns.root_domain, ns.niche, ns.category,
-    ns.da, ns.dr, ns.rd, ns.spam_score, ns.traffic_source as traffic,
-    ns.gp_price, ns.niche_edit_price, ns.deal_cbd_casino,
-    ns.email, ns.site_status, ns.website_status,
-    ns.fc_gp, ns.fc_ne, ns.website_niche, ns.sample_url, ns.href_url,
-    ns.paypal_id, ns.skype, ns.whatsapp, ns.country_source,
-    ns.created_at, ns.updated_at,
-    (SELECT MAX(nopd.created_at) FROM new_order_process_details nopd WHERE nopd.new_site_id = ns.id) as lo_created_at
+                ns.da, ns.dr, ns.rd, ns.spam_score, ns.traffic_source as traffic,
+                ns.gp_price, ns.niche_edit_price, ns.deal_cbd_casino,
+                ns.email, ns.site_status, ns.website_status,
+                ns.fc_gp, ns.fc_ne, ns.website_niche, ns.sample_url, ns.href_url,
+                ns.paypal_id, ns.skype, ns.whatsapp, ns.country_source,
+                ns.created_at, ns.updated_at,
+                (SELECT MAX(nopd.created_at) FROM new_order_process_details nopd WHERE nopd.new_site_id = ns.id) as lo_created_at
              FROM new_sites ns
-WHERE(ns.delete_site IS NULL OR ns.delete_site = 0) AND ns.site_status = '1'
+             WHERE ${whereClause}
              ORDER BY ns.created_at DESC
-             LIMIT $1 OFFSET $2`,
-            [limit, offset]
+             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+            dataParams
         );
 
         res.json({
             sites: result.rows,
-            pagination: {
-                page,
-                limit,
-                total,
-                totalPages
-            }
+            pagination: { page, limit, total, totalPages }
         });
     } catch (error) {
         next(error);
@@ -1604,7 +1707,7 @@ const getBloggerSubmissionDetail = async (req, res, next) => {
         nopd.submit_url,
         nopd.anchor,
         nopd.url as target_url,
-        nopd.ourl as post_url,
+        COALESCE(nopd.ourl, nopd.doc_urls) as post_url,
         nopd.type as option,
         nopd.insert_after,
         nopd.statement,
@@ -1921,6 +2024,176 @@ const createOrderChain = async (req, res, next) => {
     }
 };
 
+/**
+ * @route   PATCH /api/manager/tasks/:id/reject-writer
+ * @desc    Reject writer submission - return content to writer with rejection reasons per website
+ * @access  Manager only
+ */
+const rejectWriterSubmission = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        const { rejection_reason, rejected_websites } = req.body;
+
+        if (!rejection_reason) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Rejection reason is required'
+            });
+        }
+
+        // Get the latest process for this order
+        const processResult = await query(
+            `SELECT id FROM new_order_processes WHERE new_order_id = $1 ORDER BY id DESC LIMIT 1`,
+            [id]
+        );
+
+        if (!processResult.rows[0]) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'No process found for this order'
+            });
+        }
+
+        const processId = processResult.rows[0].id;
+
+        // If specific websites were rejected, update those detail records
+        if (rejected_websites && Array.isArray(rejected_websites) && rejected_websites.length > 0) {
+            for (const rw of rejected_websites) {
+                await query(
+                    `UPDATE new_order_process_details 
+                     SET status = 3, reject_reason = $1, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $2 AND new_order_process_id = $3`,
+                    [rw.reason || rejection_reason, rw.detail_id, processId]
+                );
+            }
+        } else {
+            // Reject all details back to writer
+            await query(
+                `UPDATE new_order_process_details 
+                 SET status = 3, reject_reason = $1, updated_at = CURRENT_TIMESTAMP
+                 WHERE new_order_process_id = $2`,
+                [rejection_reason, processId]
+            );
+        }
+
+        // Update process status back to 3 (with writer)
+        await query(
+            `UPDATE new_order_processes SET status = 3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+            [processId]
+        );
+
+        // Update order status back to 3 (with writer)
+        await query(
+            `UPDATE new_orders SET new_order_status = 3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+            [id]
+        );
+
+        res.json({
+            message: 'Content rejected and returned to writer',
+            order_id: id,
+            rejection_reason
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ==================== PROFILE MANAGEMENT ====================
+
+/**
+ * @route   GET /api/manager/profile
+ * @desc    Get current manager's profile
+ * @access  Manager only
+ */
+const getProfile = async (req, res, next) => {
+    try {
+        const result = await query(
+            `SELECT id, name, email, gender, mobile_number, profile_image, whatsapp, skype, created_at
+             FROM users WHERE id = $1`,
+            [req.user.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'User not found'
+            });
+        }
+
+        const user = result.rows[0];
+        res.json({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            gender: user.gender || '',
+            mobile: user.mobile_number || '',
+            profile_image: user.profile_image || '',
+            whatsapp: user.whatsapp || '',
+            skype: user.skype || '',
+            created_at: user.created_at
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   PUT /api/manager/profile
+ * @desc    Update current manager's profile
+ * @access  Manager only
+ */
+const updateProfile = async (req, res, next) => {
+    try {
+        const { name, gender, mobile } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Name is required'
+            });
+        }
+
+        await query(
+            `UPDATE users SET name = $1, gender = $2, mobile_number = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4`,
+            [name.trim(), gender || null, mobile || null, req.user.id]
+        );
+
+        res.json({ message: 'Profile updated successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * @route   POST /api/manager/profile/image
+ * @desc    Upload manager profile image
+ * @access  Manager only
+ */
+const uploadProfileImage = async (req, res, next) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'No image file provided'
+            });
+        }
+
+        const imagePath = `/uploads/profiles/${req.file.filename}`;
+
+        await query(
+            `UPDATE users SET profile_image = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [imagePath, req.user.id]
+        );
+
+        res.json({
+            message: 'Profile image uploaded successfully',
+            profile_image: imagePath
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
 module.exports = {
     getDashboardStats,
     getTasks,
@@ -1952,5 +2225,9 @@ module.exports = {
     getBloggerSubmissionDetail,
     finalizeFromBlogger,
     rejectBloggerSubmission,
-    createOrderChain
+    createOrderChain,
+    rejectWriterSubmission,
+    getProfile,
+    updateProfile,
+    uploadProfileImage
 };

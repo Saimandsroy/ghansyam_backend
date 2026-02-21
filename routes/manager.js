@@ -1,7 +1,16 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
 const managerController = require('../controllers/managerController');
 const { authenticate, authorize } = require('../middleware/auth');
+
+// Profile image upload config
+const profileStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'uploads/profiles/'),
+    filename: (req, file, cb) => cb(null, `manager-${req.user.id}-${Date.now()}${path.extname(file.originalname)}`)
+});
+const profileUpload = multer({ storage: profileStorage, limits: { fileSize: 2 * 1024 * 1024 } });
 
 // All routes require Manager role
 router.use(authenticate, authorize('Manager'));
@@ -50,6 +59,7 @@ router.patch('/tasks/:id/assign', managerController.assignToWriter);
 // Approval 2: Content approval
 router.patch('/tasks/:id/approve-content', managerController.approveContent);
 router.patch('/tasks/:id/return-to-writer', managerController.returnToWriter);
+router.patch('/tasks/:id/reject-writer', managerController.rejectWriterSubmission);
 
 // WORKFLOW STEP 5: Push to Bloggers (auto-routes to site owners)
 router.post('/tasks/:id/push-to-bloggers', managerController.pushToBloggers);
@@ -68,6 +78,11 @@ router.patch('/withdrawals/:id/reject', managerController.rejectWithdrawal);
 // ==================== WEBSITES/SITES MANAGEMENT ====================
 router.get('/websites', managerController.getWebsites);
 
+// ==================== PROFILE MANAGEMENT ====================
+router.get('/profile', managerController.getProfile);
+router.put('/profile', managerController.updateProfile);
+router.post('/profile/image', profileUpload.single('profile_image'), managerController.uploadProfileImage);
+
 // ==================== BLOGGER SUBMISSION WORKFLOW ====================
 // Get blogger submission detail for review (Screenshot 3)
 router.get('/blogger-submissions/:id', managerController.getBloggerSubmissionDetail);
@@ -77,3 +92,4 @@ router.post('/blogger-submissions/:id/finalize', managerController.finalizeFromB
 router.post('/blogger-submissions/:id/reject', managerController.rejectBloggerSubmission);
 
 module.exports = router;
+

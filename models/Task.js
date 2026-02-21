@@ -130,7 +130,9 @@ class Task {
 
         if (filters.current_status) {
             const dbStatus = STATUS_MAP[filters.current_status] || 1;
-            sql += ` AND o.new_order_status = $${paramIndex}`;
+            // CRITICAL FIX: Also check process status to exclude completed orders
+            // This prevents orders with new_order_status=4 but process_status=5 from appearing
+            sql += ` AND o.new_order_status = $${paramIndex} AND nop.status = $${paramIndex}`;
             params.push(dbStatus);
             paramIndex++;
         }
@@ -250,7 +252,7 @@ class Task {
             post_url: row.doc_urls,             // Post URL for Niche Edit
             doc_urls: row.doc_urls,             // Doc URLs for GP
             content_link: row.doc_urls,         // Alias for doc URLs  
-            content_file: row.content_file,     // External doc file
+            content_file: row.upload_doc_file,   // External doc file
             target_url: row.url,
             anchor_text: row.anchor,
             article_title: row.title,

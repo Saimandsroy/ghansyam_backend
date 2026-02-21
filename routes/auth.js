@@ -30,5 +30,12 @@ router.post('/logout', authenticate, authController.logout);
  * @access  Private
  */
 router.get('/me', authenticate, authController.getCurrentUser);
+/**
+ * @route   PUT /api/auth/change-password
+ * @desc    Change current user's password
+ * @access  Private
+ */
+router.put('/change-password', authenticate, authController.changePassword);
 
 module.exports = router;
+

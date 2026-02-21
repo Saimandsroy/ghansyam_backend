@@ -40,7 +40,7 @@ const getMyTasks = async (req, res, next) => {
                 nopd.submit_url,
                 nopd.anchor,
                 nopd.url as target_url,
-                nopd.ourl as post_url,
+                COALESCE(nopd.ourl, nopd.doc_urls) as post_url,
                 nopd.type as option,
                 nopd.insert_after,
                 nopd.statement,

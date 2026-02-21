@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
+const adminSitesController = require('../controllers/adminSitesController');
 const managerController = require('../controllers/managerController');
 const { authenticate, authorize } = require('../middleware/auth');
 
@@ -17,17 +18,27 @@ router.get('/users', adminController.getAllUsers);
 router.post('/users', adminController.createUser);
 router.put('/users/:id', adminController.updateUser);
 router.delete('/users/:id', adminController.deleteUser);
+router.put('/users/:id/reset-password', adminController.resetUserPassword);
+router.put('/users/:id/change-password', adminController.changeUserPassword);
+router.get('/users/:id/permissions', adminController.getUserPermissions);
+router.put('/users/:id/permissions', adminController.updateUserPermissions);
+
+// ==================== BLOGGER PERFORMANCE ====================
+router.get('/bloggers/:id/performance', adminController.getBloggerPerformance);
 
 // ==================== WEBSITE MANAGEMENT ====================
 router.get('/websites', adminController.getAllWebsites);
 router.post('/websites', adminController.createWebsite);
 router.post('/websites/upload', adminController.upload.single('file'), adminController.uploadWebsitesCSV);
+router.get('/websites/:id', adminController.getWebsiteById);
 router.put('/websites/:id', adminController.updateWebsite);
 router.delete('/websites/:id', adminController.deleteWebsite);
 
 // ==================== SITES EXCEL MANAGEMENT ====================
 router.get('/sites/download-format', adminController.downloadSiteFormat);
 router.post('/sites/upload-excel', adminController.upload.single('file'), adminController.uploadSitesExcel);
+router.post('/sites/upload-excel-preview', adminController.upload.single('file'), adminController.previewSitesExcel);
+router.post('/sites/upload-excel-confirm', adminController.confirmSitesExcel);
 
 // ==================== STATISTICS ====================
 router.get('/stats', adminController.getStatistics);
@@ -97,6 +108,13 @@ router.post('/countries', adminController.createCountry);
 router.get('/countries/:id', adminController.getCountryById);
 router.put('/countries/:id', adminController.updateCountry);
 router.delete('/countries/:id', adminController.deleteCountry);
+
+// ==================== LINK INSPECTION ====================
+router.get('/sites/link-completed', adminSitesController.getCompletedLinks);
+router.post('/sites/check-link-status', adminSitesController.checkLinkStatus);
+router.post('/sites/bulk-check', adminSitesController.startBulkCheck);
+router.get('/sites/bulk-check-status', adminSitesController.getBulkCheckStatus);
+router.post('/sites/stop-bulk-check', adminSitesController.stopBulkCheck);
 
 module.exports = router;
 

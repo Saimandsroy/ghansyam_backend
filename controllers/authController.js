@@ -250,10 +250,72 @@ const register = async (req, res, next) => {
         next(error);
     }
 };
+/**
+ * @route   PUT /api/auth/change-password
+ * @desc    Change current user's password
+ * @access  Private
+ */
+const changePassword = async (req, res, next) => {
+    try {
+        const { old_password, new_password, confirm_password } = req.body;
+
+        if (!old_password || !new_password || !confirm_password) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'Old password, new password, and confirm password are required'
+            });
+        }
+
+        if (new_password.length < 8) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'New password must be at least 8 characters'
+            });
+        }
+
+        if (new_password !== confirm_password) {
+            return res.status(400).json({
+                error: 'Validation Error',
+                message: 'New password and confirm password do not match'
+            });
+        }
+
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'User not found'
+            });
+        }
+
+        const isOldPasswordValid = await User.verifyPassword(old_password, user.password_hash);
+        if (!isOldPasswordValid) {
+            return res.status(401).json({
+                error: 'Authentication Failed',
+                message: 'Current password is incorrect'
+            });
+        }
+
+        const bcrypt = require('bcrypt');
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+
+        const { query } = require('../config/database');
+        await query(
+            `UPDATE users SET password = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+            [hashedPassword, req.user.id]
+        );
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        next(error);
+    }
+};
 
 module.exports = {
     login,
     logout,
     getCurrentUser,
-    register
+    register,
+    changePassword
 };
+
