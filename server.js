@@ -42,7 +42,14 @@ const allowedOrigins = [
 
 // Dynamically add origins from environment variables
 if (process.env.CORS_ORIGIN) {
-  const envOrigins = process.env.CORS_ORIGIN.split(',').map(o => o.trim());
+  const envOrigins = process.env.CORS_ORIGIN.split(',').map(o => {
+    let origin = o.trim();
+    if (origin.endsWith('/')) {
+      origin = origin.slice(0, -1);
+    }
+    return origin;
+  });
+  
   envOrigins.forEach(origin => {
     if (!allowedOrigins.includes(origin)) {
       allowedOrigins.push(origin);
