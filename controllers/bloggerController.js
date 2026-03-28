@@ -322,8 +322,11 @@ const submitLiveLink = async (req, res, next) => {
                         if (hrefDomain.includes(clientDomain) || cleanHref.includes(clientDomain)) {
                             found = true;
                             if (anchorText && anchorText.trim() !== '') {
-                                if (text.toLowerCase().includes(anchorText.toLowerCase()) ||
-                                    anchorText.toLowerCase().includes(text.toLowerCase())) {
+                                // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
+                                const normalizedExpected = anchorText.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                                const normalizedActual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                                if (normalizedActual.includes(normalizedExpected) ||
+                                    normalizedExpected.includes(normalizedActual)) {
                                     linkStatus = 'Live';
                                     checkResult = `Live - ${rel.includes('nofollow') ? 'Nofollow' : 'Dofollow'}`;
                                 } else {
@@ -2099,16 +2102,17 @@ const checkLinkStatus = async (req, res, next) => {
                             finalRel = rel;
                             return false; // Found a valid link, no anchor needed
                         } else {
-                            let expected = anchorText.toLowerCase().trim();
-                            let actual = text.toLowerCase();
+                            // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
+                            let expected = anchorText.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                            let actual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
                             
                             // Try img alt for empty links
                             if (actual === '') {
                                 const imgAlt = link.find('img').attr('alt');
-                                if (imgAlt) actual = imgAlt.trim().toLowerCase();
+                                if (imgAlt) actual = imgAlt.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
                             }
 
-                            // Strict validation (empty passes .includes otherwise)
+                            // Flexible validation: handles bold, italic, case, whitespace
                             if (actual !== '' && (actual.includes(expected) || expected.includes(actual))) {
                                 foundMatchingAnchor = true;
                                 finalRel = rel;

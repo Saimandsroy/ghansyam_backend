@@ -242,12 +242,13 @@ const checkLinkStatus = async (req, res, next) => {
                             finalRel = rel;
                             return false; 
                         } else {
-                            let expected = anchorText.toLowerCase().trim();
-                            let actual = text.toLowerCase();
+                            // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
+                            let expected = anchorText.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                            let actual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
                             
                             if (actual === '') {
                                 const imgAlt = link.find('img').attr('alt');
-                                if (imgAlt) actual = imgAlt.trim().toLowerCase();
+                                if (imgAlt) actual = imgAlt.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
                             }
 
                             if (actual !== '' && (actual.includes(expected) || expected.includes(actual))) {
@@ -357,8 +358,11 @@ async function checkSingleLinkInternal(link) {
                 if (hrefDomain.includes(clientDomain) || cleanHref.includes(clientDomain)) {
                     found = true;
                     if (anchor && anchor.trim() !== '') {
-                        if (text.toLowerCase().includes(anchor.toLowerCase()) ||
-                            anchor.toLowerCase().includes(text.toLowerCase())) {
+                        // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
+                        const normalizedExpected = anchor.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                        const normalizedActual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                        if (normalizedActual.includes(normalizedExpected) ||
+                            normalizedExpected.includes(normalizedActual)) {
                             linkStatus = 'Live';
                             checkResult = `Live - ${rel.includes('nofollow') ? 'Nofollow' : 'Dofollow'}`;
                         } else {

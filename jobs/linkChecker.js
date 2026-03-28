@@ -73,8 +73,11 @@ async function checkSingleLink(link) {
                     found = true;
 
                     if (anchor && anchor.trim() !== '') {
-                        if (text.toLowerCase().includes(anchor.toLowerCase()) ||
-                            anchor.toLowerCase().includes(text.toLowerCase())) {
+                        // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
+                        const normalizedExpected = anchor.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                        const normalizedActual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                        if (normalizedActual.includes(normalizedExpected) ||
+                            normalizedExpected.includes(normalizedActual)) {
                             linkStatus = 'Live';
                             const classification = rel.includes('nofollow') ? 'Nofollow' : 'Dofollow';
                             checkResult = `Live - ${classification}`;
