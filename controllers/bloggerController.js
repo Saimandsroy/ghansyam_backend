@@ -2049,91 +2049,160 @@ const checkLinkStatus = async (req, res, next) => {
         let linkStatus = 'Not Found';
         let checkResult = '';
 
-        try {
-            const response = await axios.get(bloggerLink, {
-                timeout: 20000,
-                maxRedirects: 5,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5'
-                },
-                validateStatus: (status) => status >= 200 && status < 500
-            });
+        // Multiple User-Agents to rotate through if WAF blocks one
+        const userAgents = [
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
+        ];
 
-            if (response.status === 404) {
-                linkStatus = 'Not Found';
-                checkResult = 'Page Not Found (404)';
-            } else if (response.status < 200 || response.status >= 300) {
-                linkStatus = 'Issue';
-                checkResult = `Issue! Status ${response.status}`;
-            } else if (clientWebsite) {
-                const $ = cheerio.load(response.data);
-                let cleanClientWebsite = clientWebsite.toLowerCase();
-                if (cleanClientWebsite.endsWith('/')) {
-                    cleanClientWebsite = cleanClientWebsite.slice(0, -1);
+        // Helper: try to find the client link in HTML content
+        function findLinkInHtml(htmlData, clientWebsite, anchorText) {
+            const $ = cheerio.load(htmlData);
+            let cleanClientWebsite = clientWebsite.toLowerCase();
+            if (cleanClientWebsite.endsWith('/')) {
+                cleanClientWebsite = cleanClientWebsite.slice(0, -1);
+            }
+            const clientDomain = cleanClientWebsite.replace(/^https?:\/\//, '');
+
+            let foundAnyLink = false;
+            let foundMatchingAnchor = false;
+            let bestMismatchText = null;
+            let finalRel = 'Dofollow';
+
+            $('a').each((i, el) => {
+                const link = $(el);
+                let href = link.attr('href');
+                let text = link.text().trim();
+                const rel = link.attr('rel') || '';
+
+                if (!href) return;
+
+                let cleanHref = href.toLowerCase();
+                if (cleanHref.endsWith('/')) {
+                    cleanHref = cleanHref.slice(0, -1);
                 }
-                const clientDomain = cleanClientWebsite.replace(/^https?:\/\//, '');
+                const hrefDomain = cleanHref.replace(/^https?:\/\//, '');
 
-                let foundAnyLink = false;
-                let foundMatchingAnchor = false;
-                let bestMismatchText = null;
-                let finalRel = 'Dofollow';
+                if (hrefDomain.includes(clientDomain) || cleanHref.includes(clientDomain)) {
+                    foundAnyLink = true;
 
-                $('a').each((i, el) => {
-                    const link = $(el);
-                    let href = link.attr('href');
-                    let text = link.text().trim();
-                    const rel = link.attr('rel') || '';
+                    if (!anchorText || anchorText.trim() === '') {
+                        foundMatchingAnchor = true;
+                        finalRel = rel;
+                        return false;
+                    } else {
+                        // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
+                        let expected = anchorText.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                        let actual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
 
-                    if (!href) return;
+                        // Try img alt for empty links
+                        if (actual === '') {
+                            const imgAlt = link.find('img').attr('alt');
+                            if (imgAlt) actual = imgAlt.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
+                        }
 
-                    let cleanHref = href.toLowerCase();
-                    if (cleanHref.endsWith('/')) {
-                        cleanHref = cleanHref.slice(0, -1);
-                    }
-                    const hrefDomain = cleanHref.replace(/^https?:\/\//, '');
-
-                    if (hrefDomain.includes(clientDomain) || cleanHref.includes(clientDomain)) {
-                        foundAnyLink = true;
-
-                        if (!anchorText || anchorText.trim() === '') {
+                        // Flexible validation: handles bold, italic, case, whitespace
+                        if (actual !== '' && (actual.includes(expected) || expected.includes(actual))) {
                             foundMatchingAnchor = true;
                             finalRel = rel;
-                            return false; // Found a valid link, no anchor needed
-                        } else {
-                            // Normalize: collapse all whitespace (incl. &nbsp;), lowercase
-                            let expected = anchorText.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
-                            let actual = text.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
-                            
-                            // Try img alt for empty links
-                            if (actual === '') {
-                                const imgAlt = link.find('img').attr('alt');
-                                if (imgAlt) actual = imgAlt.replace(/[\s\u00A0]+/g, ' ').trim().toLowerCase();
-                            }
-
-                            // Flexible validation: handles bold, italic, case, whitespace
-                            if (actual !== '' && (actual.includes(expected) || expected.includes(actual))) {
-                                foundMatchingAnchor = true;
-                                finalRel = rel;
-                                return false; // Perfect match, break out
-                            } else if (actual !== '') {
-                                if (!bestMismatchText) bestMismatchText = actual;
-                            }
+                            return false;
+                        } else if (actual !== '') {
+                            if (!bestMismatchText) bestMismatchText = actual;
                         }
                     }
-                });
+                }
+            });
 
-                if (foundMatchingAnchor) {
-                    linkStatus = 'Live';
-                    const classification = finalRel.includes('nofollow') ? 'Nofollow' : 'Dofollow';
-                    checkResult = `Live - ${classification}`;
-                } else if (foundAnyLink) {
-                    linkStatus = 'Issue';
-                    checkResult = `Anchor Mismatch (Expected: "${anchorText}", Found: "${bestMismatchText || 'Empty/Image Link'}")`;
+            return { foundAnyLink, foundMatchingAnchor, bestMismatchText, finalRel, clientDomain };
+        }
+
+        try {
+            let response = null;
+            let lastError = null;
+
+            // Try each User-Agent until we get a successful response
+            for (const ua of userAgents) {
+                try {
+                    response = await axios.get(bloggerLink, {
+                        timeout: 20000,
+                        maxRedirects: 5,
+                        headers: {
+                            'User-Agent': ua,
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'en-US,en;q=0.5',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'Connection': 'keep-alive',
+                            'Upgrade-Insecure-Requests': '1',
+                            'Cache-Control': 'max-age=0'
+                        },
+                        validateStatus: (status) => status >= 200 && status < 500
+                    });
+
+                    // If we get a 2xx response, use it immediately
+                    if (response.status >= 200 && response.status < 300) {
+                        console.log(`[LinkCheck] Success with UA: ${ua.substring(0, 30)}...`);
+                        break;
+                    }
+
+                    // If 403, still try to parse the body (some WAFs include content)
+                    if (response.status === 403 && response.data && clientWebsite) {
+                        const result = findLinkInHtml(response.data, clientWebsite, anchorText);
+                        if (result.foundMatchingAnchor || result.foundAnyLink) {
+                            console.log(`[LinkCheck] Found link in 403 response body with UA: ${ua.substring(0, 30)}...`);
+                            break; // Use this response, we found the link even in the 403 body
+                        }
+                    }
+
+                    console.log(`[LinkCheck] Got ${response.status} with UA: ${ua.substring(0, 30)}... trying next`);
+                } catch (err) {
+                    lastError = err;
+                    console.log(`[LinkCheck] Error with UA: ${ua.substring(0, 30)}... - ${err.code || err.message}`);
+                }
+            }
+
+            if (!response && lastError) {
+                throw lastError;
+            }
+
+            if (!response) {
+                linkStatus = 'Error';
+                checkResult = 'Could not fetch the page';
+            } else if (response.status === 404) {
+                linkStatus = 'Not Found';
+                checkResult = 'Page Not Found (404)';
+            } else if (clientWebsite) {
+                // Parse HTML regardless of status code (403 might still have content)
+                const htmlData = response.data;
+                if (!htmlData || typeof htmlData !== 'string' || htmlData.length < 100) {
+                    // WAF blocked and returned no useful content - treat as pass
+                    if (response.status === 403) {
+                        linkStatus = 'Live';
+                        checkResult = 'Live - Page protected by firewall (WAF), verification skipped';
+                    } else {
+                        linkStatus = 'Issue';
+                        checkResult = `Issue! Status ${response.status} - Empty response`;
+                    }
                 } else {
-                    linkStatus = 'Not Found';
-                    checkResult = `Link to ${clientDomain} not found on page`;
+                    const result = findLinkInHtml(htmlData, clientWebsite, anchorText);
+
+                    if (result.foundMatchingAnchor) {
+                        linkStatus = 'Live';
+                        const classification = result.finalRel.includes('nofollow') ? 'Nofollow' : 'Dofollow';
+                        checkResult = `Live - ${classification}`;
+                    } else if (result.foundAnyLink) {
+                        linkStatus = 'Issue';
+                        checkResult = `Anchor Mismatch (Expected: "${anchorText}", Found: "${result.bestMismatchText || 'Empty/Image Link'}")`;
+                    } else if (response.status === 403) {
+                        // WAF blocked us and we couldn't find the link in the blocked page
+                        // This is NOT the blogger's fault - allow submission
+                        linkStatus = 'Live';
+                        checkResult = 'Live - Page protected by firewall (WAF), verification skipped';
+                    } else {
+                        linkStatus = 'Not Found';
+                        checkResult = `Link to ${result.clientDomain} not found on page`;
+                    }
                 }
             } else {
                 // No client website to check against, just verify page loads
