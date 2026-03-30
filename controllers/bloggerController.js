@@ -94,7 +94,13 @@ const getMyTasks = async (req, res, next) => {
             website_domain: row.root_domain,
             da: row.da,
             dr: row.dr,
-            price: row.niche_price || row.gp_price || 0,
+            price: (() => {
+                const type = (row.order_type || '').toLowerCase();
+                if (type.includes('niche') || type.includes('edit') || type.includes('insertion')) {
+                    return row.niche_price || row.gp_price || 0;
+                }
+                return row.gp_price || row.niche_price || 0;
+            })(),
 
             // Order details
             anchor_text: row.anchor,
