@@ -31,7 +31,7 @@ const STATUS_MAP = {
     'ASSIGNED_TO_BLOGGER': 5,
     'PENDING_FINAL_CHECK': 5,
     'COMPLETED': 5,
-    'CREDITED': 5,
+    'CREDITED': 8,
     'REJECTED': 11
 };
 
@@ -41,6 +41,7 @@ const STATUS_MAP_REVERSE = {
     3: 'ASSIGNED_TO_WRITER',
     4: 'PENDING_MANAGER_APPROVAL_2',
     5: 'ASSIGNED_TO_BLOGGER',
+    8: 'CREDITED',
     11: 'REJECTED'
 };
 
@@ -49,17 +50,21 @@ class Task {
      * Convert database status to app status
      */
     static mapStatus(dbStatus, hasWriter, hasVendor, hasSubmitUrl) {
-        if (dbStatus === 5) {
+        const status = Number(dbStatus);
+
+        if (status === 8) return 'CREDITED';
+        
+        if (status === 5) {
             if (hasSubmitUrl) return 'CREDITED';
             if (hasVendor) return 'ASSIGNED_TO_BLOGGER';
             return 'COMPLETED';
         }
-        if (dbStatus === 4) return 'PENDING_MANAGER_APPROVAL_2';
-        if (dbStatus === 3) return hasWriter ? 'WRITING_IN_PROGRESS' : 'ASSIGNED_TO_WRITER';
-        if (dbStatus === 2) return 'PENDING_MANAGER_APPROVAL_1';
-        if (dbStatus === 1) return 'DRAFT';
-        if (dbStatus === 11) return 'REJECTED';
-        return STATUS_MAP_REVERSE[dbStatus] || 'DRAFT';
+        if (status === 4) return 'PENDING_MANAGER_APPROVAL_2';
+        if (status === 3) return hasWriter ? 'WRITING_IN_PROGRESS' : 'ASSIGNED_TO_WRITER';
+        if (status === 2) return 'PENDING_MANAGER_APPROVAL_1';
+        if (status === 1) return 'DRAFT';
+        if (status === 11) return 'REJECTED';
+        return STATUS_MAP_REVERSE[status] || 'DRAFT';
     }
 
     /**
