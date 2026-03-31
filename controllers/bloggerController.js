@@ -521,9 +521,9 @@ const getInvoices = async (req, res, next) => {
                 COALESCE(SUM(
                     CASE 
                         WHEN wh.price > 0 THEN wh.price
-                        WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
-                        WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
-                        ELSE 0
+                        WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                            THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                        ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
                     END
                 ), 0) as amount,
                 MAX(wh.payment_method) as payment_method,
@@ -1138,12 +1138,12 @@ const getWithdrawableOrders = async (req, res, next) => {
         const result = await query(
             `SELECT 
                 nopd.id as detail_id,
-                COALESCE(
-                    NULLIF(nopd.price, 0), 
-                    CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE NULL END,
-                    CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE NULL END,
-                    0
-                ) as price,
+                CASE
+                    WHEN nopd.price IS NOT NULL AND nopd.price > 0 THEN nopd.price
+                    WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                        THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                    ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
+                END as price,
                 nopd.submit_url,
                 nopd.updated_at as date,
                 ns.root_domain,
@@ -1842,9 +1842,9 @@ const getInvoiceDetail = async (req, res, next) => {
                 wh.order_detail_id,
                 CASE 
                     WHEN wh.price > 0 THEN wh.price
-                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
-                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
-                    ELSE 0
+                    WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                        THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                    ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
                 END as price,
                 nopd.submit_url,
                 ns.root_domain,
@@ -1931,9 +1931,9 @@ const downloadInvoicePdf = async (req, res, next) => {
             `SELECT 
                 CASE 
                     WHEN wh.price > 0 THEN wh.price
-                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
-                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
-                    ELSE 0
+                    WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                        THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                    ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
                 END as price,
                 nopd.submit_url, 
                 ns.root_domain, 

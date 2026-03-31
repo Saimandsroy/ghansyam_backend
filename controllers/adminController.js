@@ -684,15 +684,17 @@ const getBloggersWallets = async (req, res, next) => {
                 u.email,
                 COALESCE(
                     (SELECT SUM(
-                        COALESCE(
-                            NULLIF(nopd.price, 0), 
-                            CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE NULL END,
-                            CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE NULL END,
-                            0
-                        )
+                        CASE
+                            WHEN nopd.price IS NOT NULL AND nopd.price > 0 THEN nopd.price
+                            WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                                THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                            ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
+                        END
                     )
                      FROM new_order_process_details nopd
                      JOIN new_sites ns ON nopd.new_site_id = ns.id
+                     JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+                     JOIN new_orders no ON nop.new_order_id = no.id
                      WHERE nopd.vendor_id = u.id 
                        AND nopd.status = 8
                        AND nopd.id NOT IN (
@@ -801,9 +803,9 @@ const getPaymentHistory = async (req, res, next) => {
                 COALESCE(SUM(
                     CASE 
                         WHEN wh.price > 0 THEN wh.price
-                        WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
-                        WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
-                        ELSE 0
+                        WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                            THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                        ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
                     END
                 ), 0) as amount,
                 
@@ -835,6 +837,8 @@ const getPaymentHistory = async (req, res, next) => {
             LEFT JOIN wallet_histories wh ON wh.withdraw_request_id = wr.id
             LEFT JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+            LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+            LEFT JOIN new_orders no ON nop.new_order_id = no.id
             WHERE wr.status = 1
         `;
 
@@ -946,9 +950,9 @@ const getWithdrawalRequests = async (req, res, next) => {
                 COALESCE(SUM(
                     CASE 
                         WHEN wh.price > 0 THEN wh.price
-                        WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
-                        WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
-                        ELSE 0
+                        WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                            THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                        ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
                     END
                 ), 0) as amount,
                 
@@ -976,6 +980,8 @@ const getWithdrawalRequests = async (req, res, next) => {
             LEFT JOIN wallet_histories wh ON wh.withdraw_request_id = wr.id
             LEFT JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
             LEFT JOIN new_sites ns ON nopd.new_site_id = ns.id
+            LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+            LEFT JOIN new_orders no ON nop.new_order_id = no.id
             WHERE wr.status = 0
         `;
 
@@ -1066,9 +1072,9 @@ const getWithdrawalRequestDetail = async (req, res, next) => {
                 wh.order_detail_id,
                 CASE 
                     WHEN wh.price > 0 THEN wh.price
-                    WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION
-                    WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION
-                    ELSE 0
+                    WHEN LOWER(no.order_type) LIKE '%niche%' OR LOWER(no.order_type) LIKE '%edit%' OR LOWER(no.order_type) LIKE '%insertion%'
+                        THEN CASE WHEN ns.niche_edit_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.niche_edit_price::DOUBLE PRECISION ELSE 0 END
+                    ELSE CASE WHEN ns.gp_price ~ '^[0-9]+(\\.[0-9]+)?$' THEN ns.gp_price::DOUBLE PRECISION ELSE 0 END
                 END as price,
                 wh.created_at,
                 wh.request_date,
