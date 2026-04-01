@@ -1563,7 +1563,7 @@ const getWebsites = async (req, res, next) => {
         const offset = (page - 1) * limit;
 
         // Build dynamic WHERE conditions as an array
-        const conditions = [`(ns.delete_site IS NULL OR ns.delete_site = 0)`, `ns.website_status = 'Approved'`];
+        const conditions = [`(ns.delete_site IS NULL OR ns.delete_site = 0)`, `ns.site_status = '1'`];
         const queryParams = [];
         let paramIndex = 1;
 
@@ -1591,8 +1591,8 @@ const getWebsites = async (req, res, next) => {
 
         // Dropdown Filters (override the default 'Approved' if explicitly set)
         if (req.query.filter_website_status) {
-            // Remove the default 'Approved' filter and apply the explicit one
-            const idx = conditions.indexOf(`ns.website_status = 'Approved'`);
+            // Remove the default approved filter and apply the explicit one
+            const idx = conditions.indexOf(`ns.site_status = '1'`);
             if (idx > -1) conditions.splice(idx, 1);
             conditions.push(`ns.site_status = $${paramIndex}`);
             const val = req.query.filter_website_status === 'Approved' ? '1' : req.query.filter_website_status === 'Rejected' ? '2' : '0';
@@ -1600,7 +1600,7 @@ const getWebsites = async (req, res, next) => {
             paramIndex++;
         }
         if (req.query.filter_status && !req.query.filter_website_status) {
-            const idx = conditions.indexOf(`ns.website_status = 'Approved'`);
+            const idx = conditions.indexOf(`ns.site_status = '1'`);
             if (idx > -1) conditions.splice(idx, 1);
             conditions.push(`ns.site_status = $${paramIndex}`);
             const val = req.query.filter_status === 'Approved' ? '1' : req.query.filter_status === 'Rejected' ? '2' : '0';

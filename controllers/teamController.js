@@ -205,7 +205,7 @@ const getWebsites = async (req, res, next) => {
         const categoryFilter = req.query.category || '';
 
         // Build WHERE conditions
-        let whereConditions = [`(ns.delete_site IS NULL OR ns.delete_site = 0)`, `ns.site_status = '1'`, `ns.website_status = 'Approved'`];
+        let whereConditions = [`(ns.delete_site IS NULL OR ns.delete_site = 0)`, `ns.site_status = '1'`];
         let params = [];
         let paramIndex = 1;
 
