@@ -260,7 +260,7 @@ class Transaction {
                 nopd.submit_url,
                 ns.root_domain,
                 no.order_id as order_id,
-                wh_debit.withdraw_request_id
+                COALESCE(wh_debit.withdraw_request_id, wh.withdraw_request_id) as withdraw_request_id
              FROM wallet_histories wh
              JOIN wallets w ON wh.wallet_id = w.id
              LEFT JOIN wallet_histories wh_debit ON wh_debit.order_detail_id = wh.order_detail_id AND wh_debit.type = 'debit'
