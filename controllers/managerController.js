@@ -1963,6 +1963,14 @@ const finalizeFromBlogger = async (req, res, next) => {
 
         const detail = detailResult.rows[0];
 
+        // STATE GUARD: Prevent double-crediting already finalized orders
+        if (parseInt(detail.status) === 8) {
+            return res.status(400).json({
+                error: 'Invalid Action',
+                message: 'This task is already finalized and credited. Cannot finalize again.'
+            });
+        }
+
         // Update status to 8 (completed/credited)
         await query(
             `UPDATE new_order_process_details 
@@ -2076,6 +2084,14 @@ const rejectBloggerSubmission = async (req, res, next) => {
         }
 
         const detail = detailResult.rows[0];
+
+        // STATE GUARD: Prevent rejecting already finalized/credited orders
+        if (parseInt(detail.status) === 8) {
+            return res.status(400).json({
+                error: 'Invalid Action',
+                message: 'Cannot reject an already finalized and credited task. The blogger has already been paid.'
+            });
+        }
 
         // Update status to 11 (Rejected) and store rejection reason
         await query(

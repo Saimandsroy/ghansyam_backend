@@ -1790,6 +1790,20 @@ const rejectTask = async (req, res, next) => {
             });
         }
 
+        // STATE GUARD: Prevent rejecting finalized or already-rejected tasks
+        if (detail.status === 8) {
+            return res.status(400).json({
+                error: 'Invalid Action',
+                message: 'This task has already been completed and credited. It cannot be rejected.'
+            });
+        }
+        if (detail.status === 12) {
+            return res.status(400).json({
+                error: 'Invalid Action',
+                message: 'This task has already been rejected.'
+            });
+        }
+
         // Update the detail with rejection status (12 = blogger rejected) and reason
         // Note: Status 11 = Manager rejected blogger's submission (for revision)
         //       Status 12 = Blogger rejected the assignment (refused to do it)
