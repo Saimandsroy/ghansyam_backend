@@ -3847,7 +3847,7 @@ const recalculateWallet = async (req, res, next) => {
             LEFT JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
             LEFT JOIN new_orders no ON nop.new_order_id = no.id
             WHERE wh.wallet_id = $1 AND wh.type = 'credit'
-              AND nopd.status IN (11, 12)
+              AND nopd.status != 8 AND nopd.status IS NOT NULL
         `, [walletId]);
 
         const orphanedIds = orphanedRes.rows.map(r => r.wh_id);

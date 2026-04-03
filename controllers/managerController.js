@@ -2085,12 +2085,54 @@ const rejectBloggerSubmission = async (req, res, next) => {
 
         const detail = detailResult.rows[0];
 
-        // STATE GUARD: Prevent rejecting already finalized/credited orders
-        if (parseInt(detail.status) === 8) {
-            return res.status(400).json({
-                error: 'Invalid Action',
-                message: 'Cannot reject an already finalized and credited task. The blogger has already been paid.'
-            });
+        // AUTO-REFUND: If this order was already credited (status 8), reverse the wallet credit
+        let refundInfo = null;
+        if (parseInt(detail.status) === 8 && detail.vendor_id) {
+            // Find the wallet and any credit entry for this order
+            const walletRes = await query(
+                'SELECT id FROM wallets WHERE user_id = $1',
+                [detail.vendor_id]
+            );
+            if (walletRes.rows[0]) {
+                const walletId = walletRes.rows[0].id;
+
+                // Delete the credit entry for this order detail
+                const deletedCredits = await query(
+                    `DELETE FROM wallet_histories 
+                     WHERE wallet_id = $1 AND order_detail_id = $2 AND type = 'credit'
+                     RETURNING id, price`,
+                    [walletId, id]
+                );
+
+                const refundedAmount = deletedCredits.rows.reduce(
+                    (sum, r) => sum + parseFloat(r.price || 0), 0
+                );
+
+                // Recalculate the true wallet balance
+                const creditSum = await query(
+                    `SELECT COALESCE(SUM(CAST(price AS NUMERIC)), 0) as total 
+                     FROM wallet_histories WHERE wallet_id = $1 AND type = 'credit'`,
+                    [walletId]
+                );
+                const debitSum = await query(
+                    `SELECT COALESCE(SUM(CAST(price AS NUMERIC)), 0) as total 
+                     FROM wallet_histories WHERE wallet_id = $1 AND type = 'debit'`,
+                    [walletId]
+                );
+                const trueBalance = parseFloat(creditSum.rows[0].total) - parseFloat(debitSum.rows[0].total);
+
+                await query(
+                    'UPDATE wallets SET balance = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+                    [trueBalance, walletId]
+                );
+
+                refundInfo = {
+                    credits_removed: deletedCredits.rows.length,
+                    refunded_amount: refundedAmount,
+                    new_balance: trueBalance
+                };
+                console.log(`💰 Auto-refund: Removed $${refundedAmount} from blogger ${detail.vendor_id} wallet for rejected order detail ${id}. New balance: $${trueBalance}`);
+            }
         }
 
         // Update status to 11 (Rejected) and store rejection reason
@@ -2102,11 +2144,14 @@ const rejectBloggerSubmission = async (req, res, next) => {
         );
 
         res.json({
-            message: 'Blogger submission rejected successfully',
+            message: refundInfo
+                ? `Blogger submission rejected and $${refundInfo.refunded_amount} refunded from wallet`
+                : 'Blogger submission rejected successfully',
             detail_id: id,
             root_domain: detail.root_domain,
             vendor_name: detail.vendor_name,
-            rejection_reason
+            rejection_reason,
+            refund: refundInfo
         });
     } catch (error) {
         next(error);
