@@ -1281,11 +1281,48 @@ const rejectTask = async (req, res, next) => {
             });
         }
 
+        // AUTO-REFUND: Before marking as rejected, find if this order generated any wallet credits
+        const creditsRes = await query(`
+            SELECT wh.id as wh_id, wh.wallet_id, wh.price
+            FROM wallet_histories wh
+            JOIN new_order_process_details nopd ON wh.order_detail_id = nopd.id
+            JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id
+            WHERE nop.new_order_id = $1 AND wh.type = 'credit'
+        `, [id]);
+
+        let refundInfo = null;
+        if (creditsRes.rows.length > 0) {
+            let totalRefunded = 0;
+            const updatedWalletIds = new Set();
+            
+            for (const row of creditsRes.rows) {
+                // Delete credit
+                await query('DELETE FROM wallet_histories WHERE id = $1', [row.wh_id]);
+                totalRefunded += parseFloat(row.price || 0);
+                updatedWalletIds.add(row.wallet_id);
+            }
+            
+            // Recalculate all affected wallets
+            for (const wId of updatedWalletIds) {
+                const creditSum = await query(`SELECT COALESCE(SUM(CAST(price AS NUMERIC)), 0) as total FROM wallet_histories WHERE wallet_id = $1 AND type = 'credit'`, [wId]);
+                const debitSum = await query(`SELECT COALESCE(SUM(CAST(price AS NUMERIC)), 0) as total FROM wallet_histories WHERE wallet_id = $1 AND type = 'debit'`, [wId]);
+                const trueBalance = parseFloat(creditSum.rows[0].total) - parseFloat(debitSum.rows[0].total);
+                await query('UPDATE wallets SET balance = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', [trueBalance, wId]);
+            }
+            
+            refundInfo = { refunded_amount: totalRefunded, credits_removed: creditsRes.rows.length };
+            console.log(`💰 Auto-refund via rejectTask: Removed $${totalRefunded} total from wallets for new_order_id ${id}`);
+        }
+
+        // Now actually reject the task
         const updatedTask = await Task.reject(id, rejection_reason);
 
         res.json({
-            message: 'Task rejected',
-            task: updatedTask
+            message: refundInfo 
+                ? `Task rejected and $${refundInfo.refunded_amount} refunded from blogger wallets`
+                : 'Task rejected',
+            task: updatedTask,
+            refund: refundInfo
         });
     } catch (error) {
         next(error);
