@@ -13,7 +13,8 @@ const logger = require('./utils/logger');
 
 // Import routes
 const authRoutes = require('./routes/auth');
-const adminRoutes = require('./routes/admin');
+const adminRoutes = require("./routes/admin");
+const debugRoutes = require("./routes/debug");
 const teamRoutes = require('./routes/team');
 const managerRoutes = require('./routes/manager');
 const writerRoutes = require('./routes/writer');
