@@ -2007,6 +2007,14 @@ const finalizeFromBlogger = async (req, res, next) => {
                 message: 'This task is already finalized and credited. Cannot finalize again.'
             });
         }
+        
+        // STATE GUARD: Prevent finalizing orders rejected by bloggers
+        if (parseInt(detail.status) === 12) {
+            return res.status(400).json({
+                error: 'Invalid Action',
+                message: 'This task was rejected by the blogger. You cannot finalize and credit a rejected task.'
+            });
+        }
 
         // Update status to 8 (completed/credited)
         await query(
