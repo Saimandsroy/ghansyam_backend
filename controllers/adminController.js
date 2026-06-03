@@ -1578,6 +1578,16 @@ const confirmSitesExcel = async (req, res, next) => {
                 const fc_ne = parseNum(site.fc_ne);
                 const total_time = parseNum(site.total_time);
 
+                const cleanPrice = (val) => {
+                    if (val === null || val === undefined || val === '') return '';
+                    let str = String(val).trim();
+                    if (str.toUpperCase() === 'N/A') return 'N/A';
+                    return str.replace(/[^0-9.]/g, '');
+                };
+                
+                const clean_gp_price = cleanPrice(site.gp_price);
+                const clean_niche_price = cleanPrice(site.niche_edit_price);
+
                 if (resolution === 'REPLACE') {
                     // Preserve existing blogger ID before deleting
                     const existingRow = await query(
@@ -1611,7 +1621,7 @@ const confirmSitesExcel = async (req, res, next) => {
                         [
                             site.root_domain, site.niche || '', site.category || '',
                             da, dr, traffic, site.traffic_source, rd,
-                            site.gp_price || '', site.niche_edit_price || '', fc_gp, fc_ne,
+                            clean_gp_price, clean_niche_price, fc_gp, fc_ne,
                             site.spam_score, site.word_count, site.sample_url || '', site.email || '',
                             site.whatsapp || '', site.skype || '', site.paypal_id || '', site.country_source || '',
                             site.website_niche || '', site.website_status || '', site.marked_sponsor || '',
@@ -1664,7 +1674,7 @@ const confirmSitesExcel = async (req, res, next) => {
                         [
                             site.root_domain, site.niche || '', site.category || '',
                             da, dr, traffic, site.traffic_source, rd,
-                            site.gp_price || '', site.niche_edit_price || '', fc_gp, fc_ne,
+                            clean_gp_price, clean_niche_price, fc_gp, fc_ne,
                             site.spam_score, site.word_count, site.sample_url || '', site.email || '',
                             site.whatsapp || '', site.skype || '', site.paypal_id || '', site.country_source || '',
                             site.website_niche || '', site.website_status || '', site.marked_sponsor || '',
@@ -1689,7 +1699,7 @@ const confirmSitesExcel = async (req, res, next) => {
                         [
                             site.root_domain, site.niche || '', site.category || '',
                             da, dr, traffic, site.traffic_source, rd,
-                            site.gp_price || '', site.niche_edit_price || '', fc_gp, fc_ne,
+                            clean_gp_price, clean_niche_price, fc_gp, fc_ne,
                             site.spam_score, site.word_count, site.sample_url || '', site.email || '',
                             site.whatsapp || '', site.skype || '', site.paypal_id || '', site.country_source || '',
                             site.website_niche || '', site.website_status || '', site.marked_sponsor || '',
