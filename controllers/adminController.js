@@ -75,19 +75,6 @@ const createUser = async (req, res, next) => {
 
         const user = await User.create({ username: userName, email, password, role });
 
-        // Create wallet for Client role
-        if (role === 'Client') {
-            try {
-                await query(
-                    `INSERT INTO wallets (user_id, balance, created_at, updated_at)
-                     VALUES ($1, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-                    [user.id]
-                );
-            } catch (walletError) {
-                logger.warn('Admin', `Wallet creation skipped for user ${user.id}: ${walletError.message}`);
-            }
-        }
-
         res.status(201).json({
             message: 'User created successfully',
             user
