@@ -786,7 +786,8 @@ const getPaymentHistory = async (req, res, next) => {
             filter_email,
             filter_payment_method,
             filter_status,
-            filter_clearance_date,
+            filter_clearance_start_date,
+            filter_clearance_end_date,
             sort_by = 'created_at',
             sort_order = 'desc',
             page = 1,
@@ -898,9 +899,15 @@ const getPaymentHistory = async (req, res, next) => {
             paramIndex++;
         }
 
-        if (filter_clearance_date) {
-            havingClauses.push(`DATE(MAX(wh.approved_date)) = $${paramIndex}::date`);
-            params.push(filter_clearance_date);
+        if (filter_clearance_start_date) {
+            havingClauses.push(`DATE(MAX(wh.approved_date)) >= $${paramIndex}::date`);
+            params.push(filter_clearance_start_date);
+            paramIndex++;
+        }
+
+        if (filter_clearance_end_date) {
+            havingClauses.push(`DATE(MAX(wh.approved_date)) <= $${paramIndex}::date`);
+            params.push(filter_clearance_end_date);
             paramIndex++;
         }
 
@@ -914,7 +921,7 @@ const getPaymentHistory = async (req, res, next) => {
         const total = parseInt(countResult.rows[0]?.total || 0);
 
         // Sorting
-        const validSortColumns = ['user_name', 'amount', 'created_at', 'updated_at'];
+        const validSortColumns = ['user_name', 'amount', 'created_at', 'updated_at', 'clearance_date'];
         const sortColumn = validSortColumns.includes(sort_by) ? sort_by : 'created_at';
         const sortDirection = sort_order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
@@ -924,8 +931,9 @@ const getPaymentHistory = async (req, res, next) => {
         else if (sortColumn === 'amount') orderByClause = `amount ${sortDirection}`;
         else if (sortColumn === 'created_at') orderByClause = `wr.created_at ${sortDirection}`;
         else if (sortColumn === 'updated_at') orderByClause = `wr.updated_at ${sortDirection}`;
+        else if (sortColumn === 'clearance_date') orderByClause = `MAX(wh.approved_date) ${sortDirection}`;
 
-        sql += ` ORDER BY ${orderByClause} NULLS LAST`;
+        sql += ` ORDER BY ${orderByClause} NULLS LAST, wr.id ASC`;
 
         // Pagination
         sql += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
@@ -953,7 +961,7 @@ const getPaymentHistory = async (req, res, next) => {
  */
 const getWithdrawalRequests = async (req, res, next) => {
     try {
-        const { search, status, sort_by = 'created_at', sort_order = 'desc', limit = 100 } = req.query;
+        const { search, status, sort_by = 'created_at', sort_order = 'desc', limit = 100, filter_name, filter_email, filter_payment_method, filter_start_date, filter_end_date } = req.query;
 
         let sql = `
             SELECT 
@@ -1023,6 +1031,30 @@ const getWithdrawalRequests = async (req, res, next) => {
             paramIndex++;
         }
 
+        if (filter_name) {
+            sql += ` AND u.name ILIKE $${paramIndex}`;
+            params.push(`%${filter_name}%`);
+            paramIndex++;
+        }
+
+        if (filter_email) {
+            sql += ` AND u.email ILIKE $${paramIndex}`;
+            params.push(`%${filter_email}%`);
+            paramIndex++;
+        }
+
+        if (filter_start_date) {
+            sql += ` AND DATE(wr.created_at) >= $${paramIndex}::date`;
+            params.push(filter_start_date);
+            paramIndex++;
+        }
+
+        if (filter_end_date) {
+            sql += ` AND DATE(wr.created_at) <= $${paramIndex}::date`;
+            params.push(filter_end_date);
+            paramIndex++;
+        }
+
         // Allow overriding to show specific status (but default is pending only)
         if (status !== undefined && status !== null) {
             // Replace the default status filter
@@ -1033,6 +1065,16 @@ const getWithdrawalRequests = async (req, res, next) => {
 
         // Group by for aggregation
         sql += ` GROUP BY wr.id, u.id`;
+
+        const havingClauses = [];
+        if (filter_payment_method) {
+            havingClauses.push(`MAX(wh.payment_method) ILIKE $${paramIndex}`);
+            params.push(`%${filter_payment_method}%`);
+            paramIndex++;
+        }
+        if (havingClauses.length > 0) {
+            sql += ` HAVING ${havingClauses.join(' AND ')}`;
+        }
 
         // Sorting
         sql += ` ORDER BY wr.created_at ${sort_order.toLowerCase() === 'asc' ? 'ASC' : 'DESC'}`;

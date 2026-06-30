@@ -2027,6 +2027,7 @@ nopd.id as detail_id,
     nopd.new_site_id,
     ns.uploaded_user_id as site_owner_id,
     ns.root_domain,
+    ns.email as site_email,
     u.name as owner_name,
     u.email as owner_email
              FROM new_order_process_details nopd
@@ -2077,7 +2078,7 @@ VALUES(gen_random_uuid(), 'order_assigned', 'App\\Models\\User', $1, $2, CURRENT
                 root_domain: detail.root_domain,
                 vendor_id: detail.site_owner_id,
                 vendor_name: detail.owner_name,
-                vendor_email: detail.owner_email
+                vendor_email: detail.site_email || detail.owner_email
             });
         }
 
@@ -2113,26 +2114,27 @@ VALUES(gen_random_uuid(), 'order_assigned', 'App\\Models\\User', $1, $2, CURRENT
         // Send grouped email notifications per blogger (if toggle is ON)
         if (sendEmailFlag && pushedTasks.length > 0) {
             try {
-                // Group tasks by vendor (blogger)
+                // Group tasks by vendor email instead of vendor_id to prevent bulk grouping of fallback admins
                 const grouped = {};
                 for (const task of pushedTasks) {
                     if (!task.vendor_email) continue;
-                    if (!grouped[task.vendor_id]) {
-                        grouped[task.vendor_id] = { email: task.vendor_email, name: task.vendor_name, tasks: [] };
+                    const groupKey = task.vendor_email;
+                    if (!grouped[groupKey]) {
+                        grouped[groupKey] = { email: task.vendor_email, name: task.vendor_name, tasks: [] };
                     }
                     // Get order_id for this task
                     const orderIdResult = await query(
                         `SELECT no.order_id FROM new_order_process_details nopd JOIN new_order_processes nop ON nopd.new_order_process_id = nop.id JOIN new_orders no ON nop.new_order_id = no.id WHERE nopd.id = $1`,
                         [task.detail_id]
                     );
-                    grouped[task.vendor_id].tasks.push({
+                    grouped[groupKey].tasks.push({
                         root_domain: task.root_domain,
                         order_id: orderIdResult.rows[0]?.order_id || `ORD-${id}`
                     });
                 }
-                // Send ONE email per blogger
-                for (const vendorId of Object.keys(grouped)) {
-                    const g = grouped[vendorId];
+                // Send ONE email per blogger email
+                for (const key of Object.keys(grouped)) {
+                    const g = grouped[key];
                     sendOrderAssignedEmail(g.email, g.name, g.tasks);
                 }
             } catch (emailErr) {
@@ -2614,17 +2616,26 @@ const createOrderChain = async (req, res, next) => {
             try {
                 const grouped = {};
                 for (const w of websites) {
-                    const siteResult = await query('SELECT uploaded_user_id, root_domain FROM new_sites WHERE id = $1', [w.id]);
+                    const siteResult = await query('SELECT uploaded_user_id, root_domain, email as site_email FROM new_sites WHERE id = $1', [w.id]);
                     const vendorId = siteResult.rows[0]?.uploaded_user_id;
+                    const siteEmail = siteResult.rows[0]?.site_email;
                     if (!vendorId) continue;
-                    if (!grouped[vendorId]) {
-                        const userResult = await query('SELECT name, email FROM users WHERE id = $1', [vendorId]);
-                        grouped[vendorId] = { email: userResult.rows[0]?.email, name: userResult.rows[0]?.name, tasks: [] };
+                    
+                    const userResult = await query('SELECT name, email FROM users WHERE id = $1', [vendorId]);
+                    const ownerEmail = userResult.rows[0]?.email;
+                    const vendorName = userResult.rows[0]?.name;
+                    
+                    const finalEmail = siteEmail || ownerEmail;
+                    if (!finalEmail) continue;
+
+                    const groupKey = finalEmail;
+                    if (!grouped[groupKey]) {
+                        grouped[groupKey] = { email: finalEmail, name: vendorName, tasks: [] };
                     }
-                    grouped[vendorId].tasks.push({ root_domain: siteResult.rows[0]?.root_domain, order_id: orderId });
+                    grouped[groupKey].tasks.push({ root_domain: siteResult.rows[0]?.root_domain, order_id: orderId });
                 }
-                for (const vendorId of Object.keys(grouped)) {
-                    const g = grouped[vendorId];
+                for (const key of Object.keys(grouped)) {
+                    const g = grouped[key];
                     if (g.email) sendOrderAssignedEmail(g.email, g.name, g.tasks);
                 }
             } catch (emailErr) {
@@ -3290,7 +3301,7 @@ const pushClientOrderToBlogger = async (req, res, next) => {
                  d.vendor_id, isNicheEdit ? 'insert' : 'insert']
             );
 
-            pushedTasks.push({ root_domain: d.root_domain, vendor_id: d.vendor_id });
+            pushedTasks.push({ root_domain: d.root_domain, vendor_id: d.vendor_id, site_email: d.site_email });
         }
 
         // Update client order status
@@ -3304,14 +3315,21 @@ const pushClientOrderToBlogger = async (req, res, next) => {
             try {
                 const grouped = {};
                 for (const task of pushedTasks) {
-                    if (!grouped[task.vendor_id]) {
-                        const userResult = await query('SELECT name, email FROM users WHERE id = $1', [task.vendor_id]);
-                        grouped[task.vendor_id] = { email: userResult.rows[0]?.email, name: userResult.rows[0]?.name, tasks: [] };
+                    const userResult = await query('SELECT name, email FROM users WHERE id = $1', [task.vendor_id]);
+                    const ownerEmail = userResult.rows[0]?.email;
+                    const vendorName = userResult.rows[0]?.name;
+                    
+                    const finalEmail = task.site_email || ownerEmail;
+                    if (!finalEmail) continue;
+
+                    const groupKey = finalEmail;
+                    if (!grouped[groupKey]) {
+                        grouped[groupKey] = { email: finalEmail, name: vendorName, tasks: [] };
                     }
-                    grouped[task.vendor_id].tasks.push({ root_domain: task.root_domain, order_id: orderId });
+                    grouped[groupKey].tasks.push({ root_domain: task.root_domain, order_id: orderId });
                 }
-                for (const vendorId of Object.keys(grouped)) {
-                    const g = grouped[vendorId];
+                for (const key of Object.keys(grouped)) {
+                    const g = grouped[key];
                     if (g.email) sendOrderAssignedEmail(g.email, g.name, g.tasks);
                 }
             } catch (emailErr) {
