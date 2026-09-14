@@ -1567,7 +1567,7 @@ const confirmSitesExcel = async (req, res, next) => {
         const resolveBloggerId = async (email) => {
             if (email && email.trim()) {
                 const userLookup = await query(
-                    "SELECT id FROM users WHERE email = $1 LIMIT 1",
+                    "SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
                     [email.trim()]
                 );
                 if (userLookup.rows.length > 0) {
