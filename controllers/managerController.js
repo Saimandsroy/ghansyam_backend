@@ -2561,9 +2561,15 @@ const createOrderChain = async (req, res, next) => {
 
         if (target_stage === 'blogger') {
             for (const w of websites) {
-                const siteResult = await query('SELECT uploaded_user_id, root_domain FROM new_sites WHERE id = $1', [w.id]);
-                const vendorId = siteResult.rows[0]?.uploaded_user_id || w.vendor_id || null;
-                if (!vendorId) {
+                const siteResult = await query('SELECT uploaded_user_id, root_domain, email FROM new_sites WHERE id = $1', [w.id]);
+                let vendorId = siteResult.rows[0]?.uploaded_user_id;
+                // If site is assigned to admin (id=1) but has an email, try resolving the correct blogger
+                if ((!vendorId || vendorId === 1) && siteResult.rows[0]?.email) {
+                    const userLookup = await query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id != 1 LIMIT 1', [siteResult.rows[0].email.trim()]);
+                    if (userLookup.rows.length > 0) vendorId = userLookup.rows[0].id;
+                }
+                vendorId = vendorId || w.vendor_id || null;
+                if (!vendorId || vendorId === 1) {
                     return res.status(400).json({
                         error: 'Validation Error',
                         message: `Cannot push directly to blogger. Site "${siteResult.rows[0]?.root_domain || w.id}" does not have an assigned vendor/owner in the database.`
@@ -2596,8 +2602,13 @@ const createOrderChain = async (req, res, next) => {
             // For blogger stage, try to get vendor_id from the site
             let vendorId = null;
             if (target_stage === 'blogger') {
-                const siteResult = await query('SELECT uploaded_user_id FROM new_sites WHERE id = $1', [w.id]);
+                const siteResult = await query('SELECT uploaded_user_id, email FROM new_sites WHERE id = $1', [w.id]);
                 vendorId = siteResult.rows[0]?.uploaded_user_id || null;
+                // If site is assigned to admin (id=1) but has an email, resolve the correct blogger via case-insensitive lookup
+                if ((!vendorId || vendorId === 1) && siteResult.rows[0]?.email) {
+                    const userLookup = await query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id != 1 LIMIT 1', [siteResult.rows[0].email.trim()]);
+                    if (userLookup.rows.length > 0) vendorId = userLookup.rows[0].id;
+                }
             }
 
             await query(
